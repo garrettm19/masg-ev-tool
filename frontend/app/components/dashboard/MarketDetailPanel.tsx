@@ -5,6 +5,8 @@ import { Opportunity } from "@/lib/types";
 interface Props {
   opportunity?: Opportunity | null;
   bankroll?: number;
+  isTaken?: boolean;
+  onTake?: () => void;
 }
 
 function Row({ label, value, valueColor = "#94a3b8" }: {
@@ -89,7 +91,7 @@ const FD_CONF_COLOR: Record<string, string> = { High: "#2dd4bf", Medium: "#f59e0
 const LW_COLOR: Record<string, string> = { Tight: "#2dd4bf", Moderate: "#f59e0b", Wide: "#4b5563" };
 const STATUS_COLOR: Record<string, string> = { BUY: "#2dd4bf", WATCH: "#38bdf8", SKIP: "#4b5563" };
 
-export function MarketDetailPanel({ opportunity: opp, bankroll = 1000 }: Props) {
+export function MarketDetailPanel({ opportunity: opp, bankroll = 1000, isTaken = false, onTake }: Props) {
   if (!opp) {
     return (
       <div
@@ -185,7 +187,13 @@ export function MarketDetailPanel({ opportunity: opp, bankroll = 1000 }: Props) 
         <Row label="Event Match" value={`${(opp.event_match_confidence * 100).toFixed(0)}%`} valueColor={opp.event_match_confidence >= 0.90 ? "#2dd4bf" : "#6b7280"} />
         <Row label="Type" value={typeLabel} valueColor="#38bdf8" />
         <Row label="Sport" value={sportLabel(opp.sport)} valueColor="#67e8f9" />
-        <Row label="Exact Match" value="Yes" valueColor="#2dd4bf" />
+        <div className="flex items-center justify-between py-1.5">
+          <span className="font-mono text-[10px]" style={{ color: "#4b5563" }}>Match Quality</span>
+          <Badge
+            label={opp.match_quality === "verified" ? "Verified" : "Unverified"}
+            color={opp.match_quality === "verified" ? "#2dd4bf" : "#f59e0b"}
+          />
+        </div>
 
         {/* Action */}
         <div className="pt-4 space-y-2">
@@ -223,6 +231,35 @@ export function MarketDetailPanel({ opportunity: opp, bankroll = 1000 }: Props) 
             </div>
           )}
 
+          {/* Mark Taken */}
+          {isTaken ? (
+            <div
+              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-md border font-mono text-[10px]"
+              style={{ color: "#f59e0b", background: "rgba(245,158,11,0.06)", borderColor: "rgba(245,158,11,0.2)" }}
+            >
+              Position Tracked
+            </div>
+          ) : (
+            <button
+              onClick={onTake}
+              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-md border font-mono text-[10px] tracking-wider uppercase transition-all duration-150"
+              style={{
+                color: "#f59e0b",
+                background: "rgba(245,158,11,0.04)",
+                borderColor: "rgba(245,158,11,0.2)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(245,158,11,0.12)";
+                e.currentTarget.style.borderColor = "rgba(245,158,11,0.35)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(245,158,11,0.04)";
+                e.currentTarget.style.borderColor = "rgba(245,158,11,0.2)";
+              }}
+            >
+              Mark Taken
+            </button>
+          )}
         </div>
       </div>
     </div>

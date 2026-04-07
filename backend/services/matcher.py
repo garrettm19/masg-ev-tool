@@ -291,12 +291,8 @@ def match_markets(
 
     for market in markets:
         for event in events:
-            # Check sportsbook has the required market type
-            if market.market_type == "h2h" and not event.bookmakers:
-                continue
-            if market.market_type == "totals" and not event.totals:
-                continue
-            if market.market_type == "handicap" and not event.spreads:
+            # Only h2h markets are supported — require bookmaker lines
+            if market.market_type != "h2h" or not event.bookmakers:
                 continue
 
             conf, matched, delta_h = score_pair(market, event)

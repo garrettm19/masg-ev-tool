@@ -36,29 +36,6 @@ class BookmakerLine:
     last_update: str         # ISO-8601 UTC timestamp from API
 
 
-@dataclass(frozen=True)
-class SpreadLine:
-    """Game/set spread from one bookmaker."""
-    bookmaker_key: str
-    home_name: str
-    away_name: str
-    home_point: float        # e.g. -1.5 (sets) or -4.5 (games)
-    away_point: float        # e.g. +1.5
-    home_odds: int           # American
-    away_odds: int
-    last_update: str
-
-
-@dataclass(frozen=True)
-class TotalLine:
-    """Over/under total from one bookmaker."""
-    bookmaker_key: str
-    point: float             # e.g. 22.5 (games)
-    over_odds: int           # American
-    under_odds: int
-    last_update: str
-
-
 @dataclass
 class TennisOddsEvent:
     """
@@ -77,8 +54,6 @@ class TennisOddsEvent:
     away_player_norm: str
     commence_time: str       # ISO-8601 UTC
     bookmakers: list[BookmakerLine] = field(default_factory=list)
-    spreads: list[SpreadLine] = field(default_factory=list)
-    totals: list[TotalLine] = field(default_factory=list)
     consensus_home_odds: int | None = None
     consensus_away_odds: int | None = None
     # Implied probabilities derived from consensus line (include vig)
@@ -183,43 +158,10 @@ def _normalize_event(raw: dict) -> TennisOddsEvent | None:
         return None
 
     lines: list[BookmakerLine] = []
-    spread_lines: list[SpreadLine] = []
-    total_lines: list[TotalLine] = []
-
     for bm in raw.get("bookmakers") or []:
         line = _extract_bookmaker_line(bm, home, away)
         if line:
             lines.append(line)
-
-        # Extract spreads
-        for mkt in bm.get("markets") or []:
-            bm_key = bm.get("key", "unknown")
-            bm_update = mkt.get("last_update") or bm.get("last_update") or ""
-
-            if mkt.get("key") == "spreads":
-                outcomes = {o["name"]: o for o in mkt.get("outcomes") or [] if "name" in o}
-                if home in outcomes and away in outcomes:
-                    spread_lines.append(SpreadLine(
-                        bookmaker_key=bm_key,
-                        home_name=home,
-                        away_name=away,
-                        home_point=float(outcomes[home].get("point", 0)),
-                        away_point=float(outcomes[away].get("point", 0)),
-                        home_odds=int(outcomes[home]["price"]),
-                        away_odds=int(outcomes[away]["price"]),
-                        last_update=bm_update,
-                    ))
-
-            if mkt.get("key") == "totals":
-                outcomes = {o["name"]: o for o in mkt.get("outcomes") or [] if "name" in o}
-                if "Over" in outcomes and "Under" in outcomes:
-                    total_lines.append(TotalLine(
-                        bookmaker_key=bm_key,
-                        point=float(outcomes["Over"].get("point", 0)),
-                        over_odds=int(outcomes["Over"]["price"]),
-                        under_odds=int(outcomes["Under"]["price"]),
-                        last_update=bm_update,
-                    ))
 
     c_home, c_away, h_impl, a_impl = _consensus_line(lines)
 
@@ -233,8 +175,6 @@ def _normalize_event(raw: dict) -> TennisOddsEvent | None:
         away_player_norm=normalize_player_name(away),
         commence_time=commence_time,
         bookmakers=lines,
-        spreads=spread_lines,
-        totals=total_lines,
         consensus_home_odds=c_home,
         consensus_away_odds=c_away,
         home_implied=h_impl,
@@ -275,13 +215,10 @@ async def _fetch_sport_odds(
     bookmaker: str = "fanduel",
 ) -> tuple[list[dict], dict]:
     """
-    Fetch H2H + spreads + totals odds for one tennis sport.
+    Fetch H2H odds for one sport from a single bookmaker (FanDuel).
 
-    Uses 'bookmakers' for H2H (FanDuel only) and 'regions' for spreads/totals
-    (FanDuel doesn't serve these, but Bovada/BetOnline do).
-    Two API calls per sport — one for H2H, one for side markets.
+    One API call per sport. No secondary bookmakers, no spreads/totals.
     """
-    # H2H from primary bookmaker
     resp = await client.get(
         f"{_BASE}/sports/{sport_key}/odds/",
         params={
@@ -296,45 +233,7 @@ async def _fetch_sport_odds(
         "remaining": resp.headers.get("x-requests-remaining"),
         "used": resp.headers.get("x-requests-used"),
     }
-    h2h_events = resp.json()
-
-    # Spreads + totals from US region (includes Bovada, BetOnline, etc.)
-    try:
-        resp2 = await client.get(
-            f"{_BASE}/sports/{sport_key}/odds/",
-            params={
-                "apiKey": api_key,
-                "regions": "us",
-                "markets": "spreads,totals",
-                "oddsFormat": _ODDS_FORMAT,
-            },
-        )
-        resp2.raise_for_status()
-        quota = {
-            "remaining": resp2.headers.get("x-requests-remaining"),
-            "used": resp2.headers.get("x-requests-used"),
-        }
-        side_events = resp2.json()
-    except Exception as exc:
-        logger.warning("Failed to fetch spreads/totals for %s: %s", sport_key, exc)
-        side_events = []
-
-    # Merge side market bookmakers into the H2H events
-    side_by_id: dict[str, dict] = {e["id"]: e for e in side_events if "id" in e}
-    for ev in h2h_events:
-        side = side_by_id.get(ev.get("id"))
-        if side:
-            existing_bm_keys = {b["key"] for b in ev.get("bookmakers", [])}
-            for bm in side.get("bookmakers", []):
-                if bm["key"] not in existing_bm_keys:
-                    ev.setdefault("bookmakers", []).append(bm)
-                else:
-                    # Merge markets into existing bookmaker entry
-                    for existing_bm in ev["bookmakers"]:
-                        if existing_bm["key"] == bm["key"]:
-                            existing_bm.setdefault("markets", []).extend(bm.get("markets", []))
-
-    return h2h_events, quota
+    return resp.json(), quota
 
 
 # ---------------------------------------------------------------------------

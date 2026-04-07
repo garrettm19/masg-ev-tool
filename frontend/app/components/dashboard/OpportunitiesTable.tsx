@@ -7,6 +7,7 @@ interface Props {
   selectedId?: string;
   onSelect?: (opp: Opportunity) => void;
   bankroll?: number;
+  isTaken?: (opp: Opportunity) => boolean;
 }
 
 function fmtPct(n: number, dec = 1): string {
@@ -67,7 +68,7 @@ const MARKET_TYPE_LABEL: Record<string, string> = {
   h2h: "H2H", handicap: "HCAP", totals: "TOT", first_set: "1ST", unknown: "?",
 };
 
-export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankroll = 1000 }: Props) {
+export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankroll = 1000, isTaken }: Props) {
   const rows = opportunities.slice(0, 30);
 
   return (
@@ -139,6 +140,7 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
               {rows.map((opp, i) => {
                 const ss = STATUS_STYLE[(opp.status as Status)] ?? STATUS_STYLE.SKIP;
                 const isSelected = selectedId === opp.market_id;
+                const taken = isTaken?.(opp) ?? false;
                 const pColor = platformColor(opp.platform);
 
                 return (
@@ -147,9 +149,12 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
                     onClick={() => onSelect?.(opp)}
                     style={{
                       borderBottom: "1px solid rgba(19,78,74,0.08)",
+                      borderLeft: taken ? "2px solid #f59e0b" : "2px solid transparent",
                       background: isSelected
                         ? "rgba(45,212,191,0.06)"
-                        : i % 2 === 0 ? "transparent" : "rgba(13,20,22,0.35)",
+                        : taken
+                          ? "rgba(245,158,11,0.03)"
+                          : i % 2 === 0 ? "transparent" : "rgba(13,20,22,0.35)",
                     }}
                     className="hover:bg-[rgba(45,212,191,0.04)] transition-colors duration-100 cursor-pointer"
                   >
@@ -230,12 +235,22 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
 
                     {/* Status */}
                     <td className="px-3 py-3 text-center">
-                      <span
-                        className="inline-block font-mono text-[9px] tracking-wider px-2.5 py-1 rounded-md border font-medium"
-                        style={{ color: ss.color, background: ss.bg, borderColor: ss.border }}
-                      >
-                        {opp.status}
-                      </span>
+                      <div className="inline-flex items-center gap-1">
+                        <span
+                          className="inline-block font-mono text-[9px] tracking-wider px-2.5 py-1 rounded-md border font-medium"
+                          style={{ color: ss.color, background: ss.bg, borderColor: ss.border }}
+                        >
+                          {opp.status}
+                        </span>
+                        {taken && (
+                          <span
+                            className="inline-block font-mono text-[7px] tracking-wider px-1.5 py-0.5 rounded-md uppercase"
+                            style={{ color: "#f59e0b", background: "rgba(245,158,11,0.1)" }}
+                          >
+                            Taken
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Trade link */}

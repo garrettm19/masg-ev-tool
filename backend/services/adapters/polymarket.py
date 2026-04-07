@@ -46,8 +46,9 @@ class PolymarketAdapter:
         for mkt in markets:
             pm_type = classify_pm_market_type(mkt.question)
 
-            # Keep h2h, totals, and handicap markets. Drop outright/unknown.
-            if pm_type not in ("h2h", "totals", "handicap"):
+            # H2H only — handicap/totals disabled (illiquid PM markets + secondary
+            # bookmaker odds produce unreliable edge calculations)
+            if pm_type != "h2h":
                 self._dropped_by_type[pm_type] = self._dropped_by_type.get(pm_type, 0) + 1
                 continue
 

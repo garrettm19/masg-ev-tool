@@ -11,11 +11,16 @@ venv/
 *.egg-info/
 dist/
 build/
+.pytest_cache/
 
 # Node
 node_modules/
 .next/
 out/
+*.tsbuildinfo
+
+# Runtime data
+backend/data/
 
 # IDE
 .vscode/

@@ -2,6 +2,13 @@
 // Opportunities — matched prediction markets vs sportsbook (normalised)
 // ---------------------------------------------------------------------------
 
+export interface RuleEvaluation {
+  rule: string;
+  passed: boolean;
+  severity: string;                 // "CRITICAL" | "DOWNGRADE" | "INFO"
+  reason: string;
+}
+
 export interface Opportunity {
   // Platform & sport
   platform: string;                 // "polymarket" | "kalshi" | ...
@@ -25,6 +32,7 @@ export interface Opportunity {
   p_true: number;                   // devigged true probability
   edge: number;                     // p_true - pm_price_effective
   recommended_kelly: number;
+  kelly_full: number;
 
   // FanDuel metrics (FanDuel only)
   fanduel_overround: number;
@@ -32,16 +40,58 @@ export interface Opportunity {
   fanduel_line_width_label: string; // "Tight" | "Moderate" | "Wide"
   fanduel_confidence_label: string; // "High" | "Medium" | "Low"
 
-  // Event match
+  // Match quality
   event_match_confidence: number;
+  match_quality: string;            // "verified" | "unverified"
 
-  // Status
+  // Ambiguity
+  matched_event_id: string;
+  second_best_event_id: string;
+  confidence_gap: number;
+  competing_matches: number;
+  has_shared_last_name: boolean;
+
+  // Classification
   status: string;                   // "BUY" | "WATCH" | "SKIP"
+  reject_reasons: string[];         // CRITICAL rule failures
+  downgrade_reasons: string[];      // DOWNGRADE rule failures
+
+  // Observability
+  home_tokens: string[];
+  away_tokens: string[];
+  name_match_score: number;
+  date_score: number;
+  date_delta_hours: number | null;
+  rule_evaluations: RuleEvaluation[];
+}
+
+// ---------------------------------------------------------------------------
+// Tracked positions — manually marked opportunities (localStorage-persisted)
+// ---------------------------------------------------------------------------
+
+export interface TrackedPosition {
+  id: string;                       // unique key: `${platform}:${market_id}:${side}`
+  market_id: string;
+  platform: string;
+  sport: string;
+  event: string;
+  event_url: string | null;
+  market_type: string;
+  side: string;
+  line: number | null;
+  entry_price: number;              // pm_price at time of marking
+  entry_edge: number;               // edge at time of marking
+  entry_kelly: number;              // recommended_kelly at time of marking
+  fd_odds: number;
+  p_true: number;
+  taken_at: string;                 // ISO-8601 timestamp
+  status: "open" | "closed";
 }
 
 export interface OpportunitiesResponse {
   opportunities: Opportunity[];
   total: number;
+  status_counts: Record<string, number>;
   quota_remaining: string | null;
   sportsbook_markets_fetched: string[];
   markets_dropped_by_type: Record<string, number>;

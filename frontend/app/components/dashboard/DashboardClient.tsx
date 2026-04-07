@@ -3,9 +3,11 @@
 import { useState, useCallback, useEffect } from "react";
 import { Opportunity, OpportunitiesResponse } from "@/lib/types";
 import { fetchOpportunities } from "@/lib/api";
+import { useTrackedPositions } from "@/lib/useTrackedPositions";
 import { OpportunitiesTable } from "./OpportunitiesTable";
 import { MarketDetailPanel } from "./MarketDetailPanel";
-import { PriceChart } from "./PriceChart";
+import { TrackedPositions } from "./TrackedPositions";
+import { NotificationSettings, useMonitorState } from "./NotificationSettings";
 
 interface Props {
   initialData: OpportunitiesResponse;
@@ -28,11 +30,16 @@ export function DashboardClient({ initialData }: Props) {
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Opportunity | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
-  const [, setTick] = useState(0); // force re-render for "ago" text
+  const [, setTick] = useState(0);
 
-  // Update "ago" text every 15s
+  const { positions, isTaken, takePosition, closePosition, removePosition } =
+    useTrackedPositions();
+
+  const monitor = useMonitorState();
+
+  // Tick every second so "Updated Xs ago" counts up live
   useEffect(() => {
-    const interval = setInterval(() => setTick((t) => t + 1), 15000);
+    const interval = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -67,21 +74,29 @@ export function DashboardClient({ initialData }: Props) {
 
   const { opportunities } = data;
   const displayed = selected ?? opportunities[0] ?? null;
+  const displayedIsTaken = displayed ? isTaken(displayed) : false;
 
-  // Compute summary stats
   const buyCount = opportunities.filter((o) => o.status === "BUY").length;
   const watchCount = opportunities.filter((o) => o.status === "WATCH").length;
   const platforms = [...new Set(opportunities.map((o) => o.platform))];
+  const openPositions = positions.filter((p) => p.status === "open").length;
+
+  // Quota from last response
+  const quotaRemaining = data.quota_remaining;
+
+  // Monitor status for toolbar
+  const monitorRunning = monitor.status?.running ?? false;
+  const monitorEnabled = monitor.config?.enabled ?? false;
+  const alertsSent = monitor.status?.total_alerts_sent ?? 0;
 
   return (
     <main className="max-w-[1600px] mx-auto px-6 py-5 space-y-3">
-      {/* Toolbar: filters + status */}
+      {/* Toolbar */}
       <div
         className="flex items-center justify-between px-4 py-2.5 rounded-lg border"
         style={{ background: "#0c1315", borderColor: "rgba(19,78,74,0.35)" }}
       >
         <form onSubmit={handleSubmit} className="flex items-center gap-4">
-          {/* Min edge */}
           <div className="flex items-center gap-1.5">
             <label htmlFor="min-edge" className="font-mono text-[9px]" style={{ color: "#4b5563" }}>
               Min Edge
@@ -104,7 +119,6 @@ export function DashboardClient({ initialData }: Props) {
 
           <div className="h-3.5 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
 
-          {/* Bankroll */}
           <div className="flex items-center gap-1.5">
             <label htmlFor="bankroll" className="font-mono text-[9px]" style={{ color: "#4b5563" }}>
               Bankroll
@@ -138,15 +152,48 @@ export function DashboardClient({ initialData }: Props) {
           </button>
         </form>
 
-        {/* Right side: status info */}
         <div className="flex items-center gap-4 font-mono text-[9px]" style={{ color: "#374151" }}>
           <span>
             {opportunities.length} results ({buyCount} buy, {watchCount} watch)
           </span>
+          {openPositions > 0 && (
+            <>
+              <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
+              <span style={{ color: "#f59e0b" }}>
+                {openPositions} tracked
+              </span>
+            </>
+          )}
+          {quotaRemaining && (
+            <>
+              <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
+              <span>{quotaRemaining} API req left</span>
+            </>
+          )}
           <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
           <span>
             {platforms.length > 0 ? platforms.map(p => p === "polymarket" ? "PM" : p === "kalshi" ? "Kalshi" : p).join(" + ") : "No platforms"}
           </span>
+          {monitorEnabled && (
+            <>
+              <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={{
+                    background: monitorRunning ? "#a78bfa" : "#f59e0b",
+                    boxShadow: monitorRunning ? "0 0 4px #a78bfa" : undefined,
+                  }}
+                />
+                <span style={{ color: monitorRunning ? "#a78bfa" : "#f59e0b" }}>
+                  Alerts {monitorRunning ? "on" : "paused"}
+                </span>
+                {alertsSent > 0 && (
+                  <span style={{ color: "#374151" }}>({alertsSent})</span>
+                )}
+              </div>
+            </>
+          )}
           <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
           <div className="flex items-center gap-1.5">
             <span
@@ -161,7 +208,14 @@ export function DashboardClient({ initialData }: Props) {
         </div>
       </div>
 
-      {/* Main grid: table + detail panel */}
+      {/* Notification settings */}
+      <NotificationSettings
+        config={monitor.config}
+        status={monitor.status}
+        onReload={monitor.reload}
+      />
+
+      {/* Main grid: table + sidebar */}
       <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 320px" }}>
         <div className="space-y-3">
           <OpportunitiesTable
@@ -169,13 +223,27 @@ export function DashboardClient({ initialData }: Props) {
             selectedId={displayed?.market_id}
             onSelect={(opp) => setSelected(opp)}
             bankroll={bankroll}
+            isTaken={isTaken}
           />
         </div>
         <div className="space-y-3">
-          <MarketDetailPanel opportunity={displayed} bankroll={bankroll} />
-          <PriceChart opportunity={displayed} />
+          <MarketDetailPanel
+            opportunity={displayed}
+            bankroll={bankroll}
+            isTaken={displayedIsTaken}
+            onTake={() => displayed && takePosition(displayed)}
+          />
         </div>
       </div>
+
+      {/* Tracked positions */}
+      {positions.length > 0 && (
+        <TrackedPositions
+          positions={positions}
+          onClose={closePosition}
+          onRemove={removePosition}
+        />
+      )}
     </main>
   );
 }

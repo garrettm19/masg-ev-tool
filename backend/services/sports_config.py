@@ -29,20 +29,10 @@ SPORTS: dict[str, SportConfig] = {
             "KXWTAMATCH": "wta-tennis-match",
         },
         pm_tag="tennis",
-        market_types=["h2h", "totals", "handicap"],
-        match_style="individual",
-    ),
-    "mma": SportConfig(
-        key="mma",
-        label="MMA / UFC",
-        odds_api_keys=["mma_mixed_martial_arts"],
-        kalshi_series={
-            "KXUFCFIGHT": "ufc-fight",
-        },
-        pm_tag="ufc",
         market_types=["h2h"],
         match_style="individual",
     ),
+    # MMA removed — lines too unstable for reliable EV scanning
     "cricket_ipl": SportConfig(
         key="cricket_ipl",
         label="Cricket IPL",
