@@ -22,6 +22,13 @@ class SportConfig:
     match_style: str = "individual"       # "individual" (last-name) or "team" (full-name)
     max_plausible_edge: float = 0.20      # edges above this are likely data errors
     min_edge: float = 0.05                # minimum edge for BUY (liquid sports use lower)
+    # Maximum hours between PM market end_date and FD event commence_time before
+    # _date_not_stale rejects as a wrong-game match.  Default is lenient (72h)
+    # for sports where PM endDate is the TOURNAMENT end date (tennis/MMA).
+    # Liquid team sports with discrete games (MLB/NBA/NHL/...) override to 12h
+    # so that a multi-game series doesn't pair a future PM market with the
+    # next-imminent FD event when only one FD game has odds published.
+    max_date_delta_hours: float = 72.0
 
 
 SPORTS: dict[str, SportConfig] = {
@@ -50,6 +57,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],
         match_style="team",
         max_plausible_edge=0.20,
+        max_date_delta_hours=12.0,
     ),
     "rugby_nrl": SportConfig(
         key="rugby_nrl",
@@ -63,6 +71,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],
         match_style="team",
         max_plausible_edge=0.20,
+        max_date_delta_hours=12.0,
     ),
     "ufl": SportConfig(
         key="ufl",
@@ -75,6 +84,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],
         match_style="team",
         max_plausible_edge=0.20,          # thinner markets, allow higher
+        max_date_delta_hours=12.0,
     ),
     "hockey_ahl": SportConfig(
         key="hockey_ahl",
@@ -88,6 +98,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],
         match_style="team",
         max_plausible_edge=0.15,
+        max_date_delta_hours=12.0,
     ),
     "basketball_nba": SportConfig(
         key="basketball_nba",
@@ -106,6 +117,7 @@ SPORTS: dict[str, SportConfig] = {
         match_style="team",
         max_plausible_edge=0.12,          # liquid market, tight lines
         min_edge=0.03,                    # liquid — lower threshold
+        max_date_delta_hours=12.0,
     ),
     "basketball_wnba": SportConfig(
         key="basketball_wnba",
@@ -118,6 +130,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],
         match_style="team",
         max_plausible_edge=0.15,          # thinner than NBA
+        max_date_delta_hours=12.0,
     ),
     "baseball_mlb": SportConfig(
         key="baseball_mlb",
@@ -137,6 +150,7 @@ SPORTS: dict[str, SportConfig] = {
         match_style="team",
         max_plausible_edge=0.15,          # liquid market
         min_edge=0.03,                    # liquid — lower threshold
+        max_date_delta_hours=12.0,
     ),
     "hockey_nhl": SportConfig(
         key="hockey_nhl",
@@ -151,6 +165,7 @@ SPORTS: dict[str, SportConfig] = {
         match_style="team",
         max_plausible_edge=0.12,          # liquid market, tight lines
         min_edge=0.03,                    # liquid — lower threshold
+        max_date_delta_hours=12.0,
     ),
     "football_nfl": SportConfig(
         key="football_nfl",
@@ -170,6 +185,7 @@ SPORTS: dict[str, SportConfig] = {
         enable_discovery=True,
         match_style="team",
         max_plausible_edge=0.12,
+        max_date_delta_hours=12.0,
     ),
     "soccer_mls": SportConfig(
         key="soccer_mls",
@@ -182,6 +198,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],             # FanDuel returns no totals via Odds API
         match_style="team",
         max_plausible_edge=0.15,
+        max_date_delta_hours=12.0,
     ),
     "soccer_epl": SportConfig(
         key="soccer_epl",
@@ -194,6 +211,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],             # FanDuel returns no totals via Odds API
         match_style="team",
         max_plausible_edge=0.15,
+        max_date_delta_hours=12.0,
     ),
     "afl": SportConfig(
         key="afl",
@@ -207,6 +225,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],
         match_style="team",
         max_plausible_edge=0.20,
+        max_date_delta_hours=12.0,
     ),
     "baseball_kbo": SportConfig(
         key="baseball_kbo",
@@ -219,6 +238,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],
         match_style="team",
         max_plausible_edge=0.20,       # thinner market
+        max_date_delta_hours=12.0,
     ),
     "mma": SportConfig(
         key="mma",
@@ -243,6 +263,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],             # FanDuel returns no totals via Odds API
         match_style="team",
         max_plausible_edge=0.15,
+        max_date_delta_hours=12.0,
     ),
     "soccer_italy": SportConfig(
         key="soccer_italy",
@@ -255,6 +276,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],             # FanDuel returns no totals via Odds API
         match_style="team",
         max_plausible_edge=0.15,
+        max_date_delta_hours=12.0,
     ),
     "soccer_germany": SportConfig(
         key="soccer_germany",
@@ -267,6 +289,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],             # FanDuel returns no totals via Odds API
         match_style="team",
         max_plausible_edge=0.15,
+        max_date_delta_hours=12.0,
     ),
     "soccer_spain": SportConfig(
         key="soccer_spain",
@@ -279,6 +302,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],             # FanDuel returns no totals via Odds API
         match_style="team",
         max_plausible_edge=0.15,
+        max_date_delta_hours=12.0,
     ),
     "soccer_ucl": SportConfig(
         key="soccer_ucl",
@@ -291,6 +315,7 @@ SPORTS: dict[str, SportConfig] = {
         market_types=["h2h"],             # FanDuel returns no totals via Odds API
         match_style="team",
         max_plausible_edge=0.15,
+        max_date_delta_hours=12.0,
     ),
 }
 

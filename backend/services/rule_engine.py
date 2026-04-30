@@ -271,14 +271,23 @@ def _date_not_stale(f: MarketFeatures, c: EngineConfig) -> bool:
 
     When a PM market for a future game (no FD odds yet) matches the nearest
     existing FD event days away, the edge is meaningless — different game.
-    Skip when delta exceeds max_date_delta_hours AND there's no competing
-    match (which would indicate a real series).
+    Skip when delta exceeds the sport-specific max_date_delta_hours AND
+    there's no competing match (which would indicate a real series).
+
+    Liquid team sports (MLB, NBA, NHL, NFL, soccer leagues, ...) override
+    the lenient global default down to 12h via SportConfig — preventing the
+    series-game mismatch where a future PM market gets paired with the only
+    available next-imminent FD event in a multi-game series.
     """
     if f.date_delta_hours is None:
         return True  # no date info — can't check
     if f.competing_matches > 1:
         return True  # series — date proximity already handled by series dedup
-    return f.date_delta_hours <= c.max_date_delta_hours
+
+    from services.sports_config import config_for_odds_key
+    sc = config_for_odds_key(f.sport)
+    limit = sc.max_date_delta_hours if sc else c.max_date_delta_hours
+    return f.date_delta_hours <= limit
 
 
 def _edge_plausible(f: MarketFeatures, c: EngineConfig) -> bool:

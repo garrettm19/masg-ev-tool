@@ -81,8 +81,12 @@ class TestDateNotStale:
         assert "DATE_TOO_FAR" not in f.reject_reasons
 
     def test_pass_next_day(self):
-        """Next-day match (28 hours delta) passes."""
-        f = _buy_ready(date_delta_hours=28.0, competing_matches=1)
+        """Next-day match (28h) passes for sports with the lenient default (tennis)."""
+        f = _buy_ready(
+            date_delta_hours=28.0,
+            competing_matches=1,
+            sport="tennis_atp_french_open",
+        )
         status, _ = evaluate_rules(f, _cfg())
         assert "DATE_TOO_FAR" not in f.reject_reasons
 
@@ -113,17 +117,170 @@ class TestDateNotStale:
         assert "DATE_TOO_FAR" not in f.reject_reasons
 
     def test_boundary_at_72h(self):
-        """Exactly at 72h limit → passes."""
-        f = _buy_ready(date_delta_hours=72.0, competing_matches=1)
+        """Exactly at 72h limit → passes for sports with the lenient default (tennis)."""
+        f = _buy_ready(
+            date_delta_hours=72.0,
+            competing_matches=1,
+            sport="tennis_atp_french_open",
+        )
         status, _ = evaluate_rules(f, _cfg())
         assert "DATE_TOO_FAR" not in f.reject_reasons
 
     def test_boundary_above_72h(self):
-        """Just above 72h → SKIP."""
-        f = _buy_ready(date_delta_hours=72.1, competing_matches=1)
+        """Just above 72h → SKIP even for the most lenient sport (tennis)."""
+        f = _buy_ready(
+            date_delta_hours=72.1,
+            competing_matches=1,
+            sport="tennis_atp_french_open",
+        )
         status, _ = evaluate_rules(f, _cfg())
         assert status == "SKIP"
         assert "DATE_TOO_FAR" in f.reject_reasons
+
+
+# ---------------------------------------------------------------------------
+# Per-sport max_date_delta_hours: team sports tighten to 12h to prevent
+# multi-game series mismatch where a future PM market gets paired with the
+# only available next-imminent FD event.
+# ---------------------------------------------------------------------------
+
+class TestDateNotStaleSportSpecific:
+    """SportConfig.max_date_delta_hours overrides EngineConfig default."""
+
+    def test_mlb_series_wrong_game_skips(self):
+        """
+        Audit scenario reproduced: PM May 3 market matched to FD May 1 event
+        (delta=48h, competing=1). Under team-sport 12h limit → SKIP DATE_TOO_FAR.
+        """
+        f = _buy_ready(
+            date_delta_hours=48.0,
+            competing_matches=1,
+            sport="baseball_mlb",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert status == "SKIP"
+        assert "DATE_TOO_FAR" in f.reject_reasons
+
+    def test_mlb_same_day_passes(self):
+        """MLB same-day match (3h) still passes under tightened limit."""
+        f = _buy_ready(
+            date_delta_hours=3.0,
+            competing_matches=1,
+            sport="baseball_mlb",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert "DATE_TOO_FAR" not in f.reject_reasons
+
+    def test_mlb_at_12h_boundary_passes(self):
+        """MLB at exactly 12h passes."""
+        f = _buy_ready(
+            date_delta_hours=12.0,
+            competing_matches=1,
+            sport="baseball_mlb",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert "DATE_TOO_FAR" not in f.reject_reasons
+
+    def test_mlb_just_above_12h_skips(self):
+        """MLB at 12.1h → SKIP via the per-sport tighter limit."""
+        f = _buy_ready(
+            date_delta_hours=12.1,
+            competing_matches=1,
+            sport="baseball_mlb",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert status == "SKIP"
+        assert "DATE_TOO_FAR" in f.reject_reasons
+
+    def test_kbo_cross_game_skips(self):
+        """KBO 24h cross-game match → SKIP."""
+        f = _buy_ready(
+            date_delta_hours=24.0,
+            competing_matches=1,
+            sport="baseball_kbo",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert status == "SKIP"
+        assert "DATE_TOO_FAR" in f.reject_reasons
+
+    def test_nba_cross_game_skips(self):
+        """NBA 24h cross-game match → SKIP."""
+        f = _buy_ready(
+            date_delta_hours=24.0,
+            competing_matches=1,
+            sport="basketball_nba",
+            edge=0.05,  # below NBA 12% plausibility cap
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert status == "SKIP"
+        assert "DATE_TOO_FAR" in f.reject_reasons
+
+    def test_nhl_cross_game_skips(self):
+        """NHL 24h cross-game match → SKIP."""
+        f = _buy_ready(
+            date_delta_hours=24.0,
+            competing_matches=1,
+            sport="icehockey_nhl",
+            edge=0.05,
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert status == "SKIP"
+        assert "DATE_TOO_FAR" in f.reject_reasons
+
+    def test_soccer_wrong_day_skips(self):
+        """EPL 24h match → SKIP under team-sport limit."""
+        f = _buy_ready(
+            date_delta_hours=24.0,
+            competing_matches=1,
+            sport="soccer_epl",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert status == "SKIP"
+        assert "DATE_TOO_FAR" in f.reject_reasons
+
+    def test_tennis_24h_still_passes(self):
+        """Tennis retains the lenient 72h default — 24h delta still passes."""
+        f = _buy_ready(
+            date_delta_hours=24.0,
+            competing_matches=1,
+            sport="tennis_atp_french_open",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert "DATE_TOO_FAR" not in f.reject_reasons
+
+    def test_tennis_70h_still_passes(self):
+        """Tennis at 70h is still inside the lenient default."""
+        f = _buy_ready(
+            date_delta_hours=70.0,
+            competing_matches=1,
+            sport="tennis_atp_french_open",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert "DATE_TOO_FAR" not in f.reject_reasons
+
+    def test_mma_24h_still_passes(self):
+        """MMA retains the lenient default — settlement timing varies."""
+        f = _buy_ready(
+            date_delta_hours=24.0,
+            competing_matches=1,
+            sport="mma_mixed_martial_arts",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert "DATE_TOO_FAR" not in f.reject_reasons
+
+    def test_mlb_series_with_multiple_fd_events_still_passes(self):
+        """
+        Multi-FD-event series exemption survives the tightening: when both
+        series games have FD odds (competing=2), date proximity is handled
+        by series dedup rather than the date_not_stale rule.
+        """
+        f = _buy_ready(
+            date_delta_hours=48.0,
+            competing_matches=2,
+            sport="baseball_mlb",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert "DATE_TOO_FAR" not in f.reject_reasons
 
 
 # ---------------------------------------------------------------------------
