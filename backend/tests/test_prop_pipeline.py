@@ -37,13 +37,13 @@ def _make_h2h_event() -> TennisOddsEvent:
         away_player="Miami Heat",
         home_player_norm=normalize_name("Boston Celtics"),
         away_player_norm=normalize_name("Miami Heat"),
-        commence_time="2026-04-11T23:00:00Z",
+        commence_time="2030-06-11T23:00:00Z",
         bookmakers=[BookmakerLine(
             bookmaker_key="fanduel",
             bookmaker_title="FanDuel",
             home_odds=-150,
             away_odds=130,
-            last_update="2026-04-09T12:00:00Z",
+            last_update="2030-06-09T12:00:00Z",
         )],
     )
 
@@ -61,7 +61,7 @@ def _make_h2h_market() -> NormalizedMarket:
         url=None,
         timestamp=None,
         question="Will Boston Celtics beat Miami Heat?",
-        end_date="2026-04-12T06:00:00Z",
+        end_date="2030-06-12T06:00:00Z",
         outcome_prices=["0.55", "0.45"],
         event_slug="test",
     )
@@ -76,7 +76,7 @@ def _make_prop_event() -> PropEvent:
         away_team="Miami Heat",
         home_team_norm=normalize_name("Boston Celtics"),
         away_team_norm=normalize_name("Miami Heat"),
-        commence_time="2026-04-11T23:00:00Z",
+        commence_time="2030-06-11T23:00:00Z",
         props=[
             PropLine(
                 bookmaker_key="fanduel",
@@ -86,7 +86,7 @@ def _make_prop_event() -> PropEvent:
                 line=27.5,
                 over_odds=-200,
                 under_odds=170,
-                last_update="2026-04-09T12:00:00Z",
+                last_update="2030-06-09T12:00:00Z",
             ),
         ],
     )
@@ -269,7 +269,7 @@ class TestPropGuardrails:
                 line=20.5 + i,
                 over_odds=-110,
                 under_odds=-110,
-                last_update="2026-04-09T12:00:00Z",
+                last_update="2030-06-09T12:00:00Z",
             ))
 
         prop_event = PropEvent(
@@ -280,7 +280,7 @@ class TestPropGuardrails:
             away_team="Miami Heat",
             home_team_norm=normalize_name("Boston Celtics"),
             away_team_norm=normalize_name("Miami Heat"),
-            commence_time="2026-04-11T23:00:00Z",
+            commence_time="2030-06-11T23:00:00Z",
             props=prop_lines,
         )
 

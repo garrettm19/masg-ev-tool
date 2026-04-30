@@ -43,7 +43,7 @@ def _make_prop_line(
         line=line,
         over_odds=over_odds,
         under_odds=under_odds,
-        last_update="2026-04-09T12:00:00Z",
+        last_update="2030-06-09T12:00:00Z",
     )
 
 
@@ -62,7 +62,7 @@ def _make_prop_event(
         away_team=away,
         home_team_norm=normalize_name(home),
         away_team_norm=normalize_name(away),
-        commence_time="2026-04-10T23:00:00Z",
+        commence_time="2030-06-10T23:00:00Z",
         props=props or [],
     )
 
@@ -435,10 +435,10 @@ class TestPropRuleEngine:
             home_player="Boston Celtics", away_player="Miami Heat",
             home_player_norm=normalize_name("Boston Celtics"),
             away_player_norm=normalize_name("Miami Heat"),
-            commence_time="2026-04-11T23:00:00Z",
+            commence_time="2030-06-11T23:00:00Z",
             bookmakers=[BookmakerLine(
                 bookmaker_key="fanduel", bookmaker_title="FanDuel",
-                home_odds=-150, away_odds=130, last_update="2026-04-09T12:00:00Z",
+                home_odds=-150, away_odds=130, last_update="2030-06-09T12:00:00Z",
             )],
         )
         market = NM(
@@ -447,7 +447,7 @@ class TestPropRuleEngine:
             market_type="h2h", side="", line=None,
             price=0.55, liquidity=5000.0, url=None, timestamp=None,
             question="Will Boston Celtics beat Miami Heat?",
-            end_date="2026-04-12T06:00:00Z",
+            end_date="2030-06-12T06:00:00Z",
             outcome_prices=["0.55", "0.45"], event_slug="test",
         )
 
