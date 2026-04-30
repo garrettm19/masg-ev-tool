@@ -29,6 +29,9 @@ backend/data/
 *.swo
 *~
 
+# Claude Code harness state (local, machine-specific)
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
