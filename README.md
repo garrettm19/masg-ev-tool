@@ -71,7 +71,7 @@ Every opportunity goes through a two-pass evaluation:
 - Computes all pricing, confidence, and ambiguity metrics
 
 **Pass B -- Rule Engine**
-- Evaluates 20 named rules from a centralized policy table
+- Evaluates a centralized policy table (defined in `backend/services/rule_engine.py`)
 - Each rule is CRITICAL (fail = SKIP) or DOWNGRADE (fail = WATCH)
 - Classifies every opportunity as BUY, WATCH, or SKIP with full reasoning
 
@@ -196,7 +196,7 @@ masg-ev-tool/
 | `GET /api/opportunities` | Matched opportunities with edge/kelly/status |
 | `GET /api/opportunities?min_edge=0.03` | Filter by minimum edge (3%) |
 | `GET /api/opportunities?platform=kalshi` | Filter by platform |
-| `GET /api/opportunities/policy` | Current rule policy table (20 rules) |
+| `GET /api/opportunities/policy` | Current rule policy table |
 | `GET /api/opportunities/history` | Price history for a market |
 | `GET /api/opportunities/debug` | Full pipeline diagnostic trace |
 
@@ -234,4 +234,4 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-204 tests covering all 20 policy rules, normalization edge cases, feature extraction, and ambiguity detection.
+204 tests covering policy rules, normalization edge cases, feature extraction, and ambiguity detection.

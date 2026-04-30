@@ -232,7 +232,7 @@ async def get_matched_markets(
     return MatchesResponse(
         matches=matches_out,
         total=len(matches_out),
-        markets_searched=len(markets),
+        markets_searched=len(normalized),
         events_searched=len(odds_events),
         min_confidence=min_confidence,
         quota_remaining=meta.get("quota_remaining"),
