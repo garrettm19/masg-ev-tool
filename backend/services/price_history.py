@@ -75,54 +75,135 @@ async def fetch_polymarket_history(
         ]
 
 
+async def _fetch_kalshi_candles(
+    series_ticker: str,
+    market_ticker: str,
+    api_key: str,
+    client: httpx.AsyncClient,
+    start_ts: int,
+    end_ts: int,
+    period_interval: int,
+) -> list[dict]:
+    """Fetch raw candlestick dicts for one Kalshi market."""
+    resp = await client.get(
+        f"{_KALSHI_BASE}/series/{series_ticker}/markets/{market_ticker}/candlesticks",
+        params={
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "period_interval": period_interval,
+        },
+        headers={"Authorization": api_key},
+    )
+    resp.raise_for_status()
+    return resp.json().get("candlesticks", [])
+
+
+def _candle_bid_ask(candle: dict) -> tuple[float, float] | None:
+    """Extract (yes_bid_close, yes_ask_close) from a candle, or None."""
+    bid = candle.get("yes_bid", {}).get("close_dollars")
+    ask = candle.get("yes_ask", {}).get("close_dollars")
+    if bid and ask:
+        try:
+            return float(bid), float(ask)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
 async def fetch_kalshi_history(
     market_ticker: str,
-    period_interval: int = 60,
+    period_interval: int = 1,
     days_back: int = 7,
 ) -> list[PricePoint]:
     """
-    Fetch candlestick price history for a Kalshi market.
+    Fetch price history for a Kalshi market as cross-market mid-prices.
 
-    Uses the close price from each candlestick period.
+    For paired 2-way markets, fetches both sides and computes the
+    cross-market mid at each timestamp:
+      best_buy  = min(M1 yes_ask, 1 - M2 yes_bid)
+      best_sell = max(M1 yes_bid, 1 - M2 yes_ask)
+      mid = (best_buy + best_sell) / 2
+
+    Falls back to single-market mid if no paired market is found.
     """
     api_key = os.getenv("KALSHI_API_KEY", "")
     if not api_key:
         return []
 
-    # Extract series ticker (first segment before the event-specific parts)
-    # KXATPMATCH-26APR07GARZVE-ZVE -> KXATPMATCH
     parts = market_ticker.split("-")
     series_ticker = parts[0] if parts else market_ticker
+    # Event ticker = market_ticker without the last suffix
+    # KXUFLGAME-26APR07STLDAL-DAL → KXUFLGAME-26APR07STLDAL
+    event_ticker = "-".join(parts[:-1]) if len(parts) >= 3 else ""
 
     now = int(time.time())
     start_ts = now - (days_back * 86400)
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(
-            f"{_KALSHI_BASE}/series/{series_ticker}/markets/{market_ticker}/candlesticks",
-            params={
-                "start_ts": start_ts,
-                "end_ts": now,
-                "period_interval": period_interval,
-            },
-            headers={"Authorization": api_key},
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        # Fetch primary market candles
+        primary_candles = await _fetch_kalshi_candles(
+            series_ticker, market_ticker, api_key, client, start_ts, now, period_interval,
         )
-        resp.raise_for_status()
-        data = resp.json()
 
+        # Find and fetch paired market
+        paired_candles_by_ts: dict[int, dict] = {}
+        if event_ticker:
+            try:
+                resp = await client.get(
+                    f"{_KALSHI_BASE}/markets",
+                    params={"event_ticker": event_ticker, "limit": 10},
+                    headers={"Authorization": api_key},
+                )
+                resp.raise_for_status()
+                siblings = resp.json().get("markets", [])
+                # Find the other non-draw market
+                paired_ticker = None
+                for m in siblings:
+                    t = m.get("ticker", "")
+                    sub = (m.get("yes_sub_title") or "").lower()
+                    if t != market_ticker and sub not in ("tie", "draw"):
+                        paired_ticker = t
+                        break
+                if paired_ticker:
+                    paired_raw = await _fetch_kalshi_candles(
+                        series_ticker, paired_ticker, api_key, client,
+                        start_ts, now, period_interval,
+                    )
+                    for c in paired_raw:
+                        ts = c.get("end_period_ts")
+                        if ts:
+                            paired_candles_by_ts[int(ts)] = c
+            except Exception as exc:
+                logger.debug("Failed to fetch paired market for %s: %s", market_ticker, exc)
+
+        # Build price points
         points: list[PricePoint] = []
-        for candle in data.get("candlesticks", []):
+        for candle in primary_candles:
             ts = candle.get("end_period_ts")
-            price_data = candle.get("price", {})
-            close = price_data.get("close_dollars")
-            if ts and close:
-                try:
-                    points.append(PricePoint(
-                        timestamp=int(ts),
-                        price=float(close),
-                    ))
-                except (ValueError, TypeError):
-                    pass
+            if not ts:
+                continue
+            ts_int = int(ts)
+            m1 = _candle_bid_ask(candle)
+            if not m1:
+                continue
+
+            m1_bid, m1_ask = m1
+            paired = paired_candles_by_ts.get(ts_int)
+
+            if paired:
+                m2 = _candle_bid_ask(paired)
+                if m2:
+                    m2_bid, m2_ask = m2
+                    # Cross-market: best route to buy/sell M1's outcome
+                    best_buy = min(m1_ask, 1.0 - m2_bid)
+                    best_sell = max(m1_bid, 1.0 - m2_ask)
+                    mid = (best_buy + best_sell) / 2.0
+                    points.append(PricePoint(timestamp=ts_int, price=round(mid, 4)))
+                    continue
+
+            # Fallback: single-market mid
+            mid = (m1_bid + m1_ask) / 2.0
+            points.append(PricePoint(timestamp=ts_int, price=round(mid, 4)))
 
         return points
 

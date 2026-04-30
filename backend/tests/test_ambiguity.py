@@ -152,3 +152,43 @@ class TestEnrichAmbiguityMetrics:
 
         assert f1.competing_matches == 1
         assert f2.competing_matches == 1
+
+    def test_cross_platform_same_ambiguity_when_both_events_match(self):
+        """
+        When two sportsbook events share both player names (same players in
+        different tournaments), BOTH platform markets see competing_matches=2.
+
+        This proves that per-platform enrichment doesn't create a blind spot:
+        if both events match on Polymarket, they also match on Kalshi (same
+        player names), so ambiguity is detected on both platforms independently.
+        """
+        # Polymarket market matched to E1 and E2
+        pm_e1 = _make_feature(
+            platform="polymarket", market_id="pm1",
+            event_id="ev1", confidence=0.95,
+            home_norm="carlos alcaraz", away_norm="jannik sinner",
+        )
+        pm_e2 = _make_feature(
+            platform="polymarket", market_id="pm1",
+            event_id="ev2", confidence=0.92,
+            home_norm="carlos alcaraz", away_norm="jannik sinner",
+        )
+
+        # Kalshi market also matched to E1 and E2 (same player names)
+        k_e1 = _make_feature(
+            platform="kalshi", market_id="k1",
+            event_id="ev1", confidence=0.95,
+            home_norm="carlos alcaraz", away_norm="jannik sinner",
+        )
+        k_e2 = _make_feature(
+            platform="kalshi", market_id="k1",
+            event_id="ev2", confidence=0.92,
+            home_norm="carlos alcaraz", away_norm="jannik sinner",
+        )
+
+        _enrich_ambiguity_metrics([pm_e1, pm_e2, k_e1, k_e2])
+
+        # Both platforms see the same ambiguity
+        assert pm_e1.competing_matches == 2
+        assert k_e1.competing_matches == 2
+        assert pm_e1.confidence_gap == k_e1.confidence_gap

@@ -155,3 +155,34 @@ class TestNameAppearsInText:
     def test_word_boundary_match(self):
         text = "lee vs kim"
         assert name_appears_in_text("duck hee lee", text)
+
+
+# ---------------------------------------------------------------------------
+# Normalizer convergence (normalize_name matches normalize_player_name)
+# ---------------------------------------------------------------------------
+
+class TestNormalizerConvergence:
+    """
+    Verify that odds_provider.normalize_player_name produces identical
+    output to normalizer.normalize_name — they must stay in sync.
+    """
+
+    def test_basic(self):
+        from services.odds_provider import normalize_player_name
+        assert normalize_player_name("Carlos Alcaraz") == normalize_name("Carlos Alcaraz")
+
+    def test_diacritics(self):
+        from services.odds_provider import normalize_player_name
+        assert normalize_player_name("Iga Świątek") == normalize_name("Iga Świątek")
+
+    def test_hyphen(self):
+        from services.odds_provider import normalize_player_name
+        assert normalize_player_name("Félix Auger-Aliassime") == normalize_name("Félix Auger-Aliassime")
+
+    def test_apostrophe(self):
+        from services.odds_provider import normalize_player_name
+        assert normalize_player_name("Jannik O'Sullivan") == normalize_name("Jannik O'Sullivan")
+
+    def test_team_name(self):
+        from services.odds_provider import normalize_player_name
+        assert normalize_player_name("Kolkata Knight Riders") == normalize_name("Kolkata Knight Riders")

@@ -56,6 +56,12 @@ export interface Opportunity {
   reject_reasons: string[];         // CRITICAL rule failures
   downgrade_reasons: string[];      // DOWNGRADE rule failures
 
+  // Data quality
+  bid_ask_spread: number | null;      // yes_ask - yes_bid; null if unavailable
+
+  // Staleness
+  price_fetched_at: number;           // Unix seconds — when platform price was obtained
+
   // Observability
   home_tokens: string[];
   away_tokens: string[];
@@ -84,8 +90,15 @@ export interface TrackedPosition {
   entry_kelly: number;              // recommended_kelly at time of marking
   fd_odds: number;
   p_true: number;
+  matched_event_id: string;         // Odds API event ID (for historical odds)
   taken_at: string;                 // ISO-8601 timestamp
+  start_time: string | null;        // event start time (ISO-8601); CLV cutoff
   status: "open" | "closed";
+  close_price: number | null;       // prediction market close (legacy, kept for reference)
+  entry_ev: number | null;           // p_true - entry_price (FD entry edge)
+  fd_close_odds: number | null;     // FanDuel closing American odds for this side
+  fd_close_prob: number | null;     // FanDuel closing devigged probability
+  clv_prob: number | null;          // fd_close_prob - entry_price (closing line value)
 }
 
 export interface OpportunitiesResponse {
@@ -95,5 +108,32 @@ export interface OpportunitiesResponse {
   quota_remaining: string | null;
   sportsbook_markets_fetched: string[];
   markets_dropped_by_type: Record<string, number>;
+  platforms_fetched: string[];
+  updated_at: number | null;
+  is_refreshing: boolean;
+}
+
+export interface BookStatus {
+  has_data: boolean;
+  event_count: number;
+  cache_age_seconds: number | null;
+  raw_count?: number | null;           // Kalshi only: markets from API before matching
+}
+
+export interface SportDataStatus {
+  key: string;
+  label: string;
+  fanduel: BookStatus;
+  polymarket: BookStatus;
+  kalshi: BookStatus;
+}
+
+export interface SnapshotStatus {
+  has_snapshot: boolean;
+  updated_at: number | null;
+  is_refreshing: boolean;
+  trigger: string | null;
+  opportunity_count: number;
+  status_counts: Record<string, number>;
   platforms_fetched: string[];
 }

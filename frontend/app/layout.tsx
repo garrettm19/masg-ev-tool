@@ -46,6 +46,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             >
               Scanner
             </Link>
+            <Link
+              href="/model"
+              className="nav-link text-[11px] font-mono tracking-widest uppercase transition-colors"
+              style={{ color: "#4b7280" }}
+            >
+              Model
+            </Link>
           </nav>
 
           <div className="ml-auto flex items-center gap-4">

@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from routers import odds, opportunities, monitor
+from routers import odds, opportunities, monitor, scan
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -19,3 +19,4 @@ app.add_middleware(
 app.include_router(odds.router, prefix="/api")
 app.include_router(opportunities.router, prefix="/api")
 app.include_router(monitor.router, prefix="/api")
+app.include_router(scan.router, prefix="/api")

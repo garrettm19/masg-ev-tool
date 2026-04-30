@@ -24,7 +24,7 @@ from services.feature_extractor import (
     _detect_last_name_collision,
     _check_price_consistency,
 )
-from services.odds_provider import TennisOddsEvent, BookmakerLine
+from services.odds_provider import TennisOddsEvent, BookmakerLine, normalize_player_name
 from services.normalizer import normalize_name
 
 
@@ -165,7 +165,34 @@ class TestDateScore:
 
     def test_within_21days(self):
         score, _ = _date_score("2026-06-20T12:00:00Z", "2026-06-01T12:00:00Z")
-        assert score == 0.75
+        assert score == 0.70
+
+    def test_21day_confidence_below_buy_threshold(self):
+        """21-day delta should produce confidence below buy threshold (0.90)."""
+        # name_score=1.0, date_score=0.70 → confidence = 0.65 + 0.245 = 0.895
+        confidence = 1.0 * 0.65 + 0.70 * 0.35
+        assert confidence < 0.90
+
+    def test_date_score_matches_matcher(self):
+        """feature_extractor._date_score and matcher._date_score must agree on all tiers."""
+        from services.matcher import _date_score as matcher_date_score
+
+        cases = [
+            ("2026-06-01T12:00:00Z", "2026-06-01T12:00:00Z"),   # 0h
+            ("2026-06-01T17:00:00Z", "2026-06-01T12:00:00Z"),   # 5h
+            ("2026-06-02T10:00:00Z", "2026-06-01T12:00:00Z"),   # 22h
+            ("2026-06-06T12:00:00Z", "2026-06-01T12:00:00Z"),   # 5d
+            ("2026-06-20T12:00:00Z", "2026-06-01T12:00:00Z"),   # 19d
+            ("2026-08-01T12:00:00Z", "2026-06-01T12:00:00Z"),   # >21d
+            (None, "2026-06-01T12:00:00Z"),                      # missing
+        ]
+        for end_date, commence_time in cases:
+            fe_score, _ = _date_score(end_date, commence_time)
+            m_score, _ = matcher_date_score(end_date, commence_time)
+            assert fe_score == m_score, (
+                f"Divergence at end_date={end_date}: "
+                f"feature_extractor={fe_score}, matcher={m_score}"
+            )
 
     def test_beyond_21days(self):
         score, _ = _date_score("2026-08-01T12:00:00Z", "2026-06-01T12:00:00Z")
@@ -216,6 +243,69 @@ class TestIdentifyYesPlayer:
         yes, no, matched = _identify_yes_player(
             q, "carlos alcaraz", "jannik sinner", "Carlos Alcaraz", "Jannik Sinner"
         )
+        assert matched is False
+
+    def test_hyphenated_player(self):
+        """Hyphenated player name must align correctly after normalization."""
+        q = normalize_name("Auger-Aliassime vs Sinner")
+        yes, no, matched = _identify_yes_player(
+            q,
+            "felix auger aliassime",  # normalized (hyphen → space)
+            "jannik sinner",
+            "Félix Auger-Aliassime",
+            "Jannik Sinner",
+        )
+        assert matched is True
+        assert yes == "Félix Auger-Aliassime"
+        assert no == "Jannik Sinner"
+
+    def test_will_X_beat_Y_phrasing(self):
+        """Standard Polymarket phrasing: YES player appears first after 'Will'."""
+        q = normalize_name("Will Sinner beat Alcaraz in the ATP Finals?")
+        yes, no, matched = _identify_yes_player(
+            q, "carlos alcaraz", "jannik sinner", "Carlos Alcaraz", "Jannik Sinner"
+        )
+        assert matched is True
+        assert yes == "Jannik Sinner"
+
+    def test_colon_separated_event(self):
+        """Kalshi-style question: 'Event: Player A vs Player B'."""
+        q = normalize_name("ATP Finals: Alcaraz vs Sinner - Match Winner")
+        yes, no, matched = _identify_yes_player(
+            q, "carlos alcaraz", "jannik sinner", "Carlos Alcaraz", "Jannik Sinner"
+        )
+        assert matched is True
+        assert yes == "Carlos Alcaraz"
+
+    def test_same_last_name_unresolvable(self):
+        """Two players with same last name — regex matches at same position, outcome_aligned=False."""
+        q = normalize_name("Smith vs Smith in the final")
+        yes, no, matched = _identify_yes_player(
+            q, "carlos smith", "john smith", "Carlos Smith", "John Smith"
+        )
+        # Both last names are "smith" — regex finds the same match position
+        # so we can't determine YES/NO order. Must return outcome_aligned=False.
+        assert matched is False
+
+    def test_same_last_name_with_full_names_in_question(self):
+        """Same last name but full names in question — full-name position resolves order."""
+        q = normalize_name("Carlos Smith vs John Smith")
+        yes, no, matched = _identify_yes_player(
+            q, "carlos smith", "john smith", "Carlos Smith", "John Smith"
+        )
+        # Full-name substring position: "carlos smith" at 0, "john smith" at 16
+        # Different positions → aligned=True, YES=Carlos Smith (first)
+        assert matched is True
+        assert yes == "Carlos Smith"
+
+    def test_same_last_name_only_last_names_in_question(self):
+        """Same last name, only last names in question — falls to last-name strategy, ambiguous."""
+        q = normalize_name("Smith vs Smith in the final")
+        yes, no, matched = _identify_yes_player(
+            q, "carlos smith", "john smith", "Carlos Smith", "John Smith"
+        )
+        # Full names not in question → Strategy A fails
+        # Last-name strategy: both "smith" → same position → ambiguous
         assert matched is False
 
 
@@ -429,3 +519,195 @@ class TestExtractFeatures:
         features = extract_features(market, event, EngineConfig())
         assert len(features) == 2
         assert features[0].prices_internally_consistent is False
+
+    def test_pm_price_no_uses_actual_counterpart(self):
+        """pm_price_no should use the actual NO price, not 1.0 - price."""
+        market = _make_market(prices=["0.55", "0.43"])  # sum = 0.98, not 1.0
+        event = _make_event()
+        features = extract_features(market, event, EngineConfig())
+        assert len(features) == 2
+
+        yes_side = next(f for f in features if f.pm_price == 0.55)
+        no_side = next(f for f in features if f.pm_price == 0.43)
+        # YES side's pm_price_no should be the actual NO price (0.43), not 1.0 - 0.55 = 0.45
+        assert yes_side.pm_price_no == pytest.approx(0.43, abs=0.001)
+        # NO side's pm_price_no should be the actual YES price (0.55), not 1.0 - 0.43 = 0.57
+        assert no_side.pm_price_no == pytest.approx(0.55, abs=0.001)
+
+    def test_non_fanduel_bookmaker_treated_as_no_data(self):
+        """If bookmaker is not FanDuel, features are produced without edge."""
+        market = _make_market()
+        event = TennisOddsEvent(
+            event_id="ev1",
+            sport_key="tennis_atp",
+            tournament="ATP Test",
+            home_player="Carlos Alcaraz",
+            away_player="Jannik Sinner",
+            home_player_norm="carlos alcaraz",
+            away_player_norm="jannik sinner",
+            commence_time="2026-06-01T12:00:00Z",
+            bookmakers=[
+                BookmakerLine(
+                    bookmaker_key="draftkings",
+                    bookmaker_title="DraftKings",
+                    home_odds=-180,
+                    away_odds=150,
+                    last_update="2026-06-01T12:00:00Z",
+                )
+            ],
+        )
+        features = extract_features(market, event, EngineConfig())
+        assert len(features) == 1
+        assert features[0].has_bookmaker_data is False
+        assert features[0].edge == 0.0
+
+    def test_hyphenated_name_with_real_player_norms(self):
+        """
+        Full pipeline with normalize_player_name (production path) for a
+        hyphenated player. Before the normalizer fix, this would fail because
+        normalize_player_name preserved hyphens while normalize_name removed them.
+        """
+        market = _make_market(
+            question="Auger-Aliassime vs Sinner",
+            prices=["0.40", "0.60"],
+        )
+        event = TennisOddsEvent(
+            event_id="ev_hyph",
+            sport_key="tennis_atp",
+            tournament="ATP Test",
+            home_player="Félix Auger-Aliassime",
+            away_player="Jannik Sinner",
+            home_player_norm=normalize_player_name("Félix Auger-Aliassime"),
+            away_player_norm=normalize_player_name("Jannik Sinner"),
+            commence_time="2026-06-01T12:00:00Z",
+            bookmakers=[
+                BookmakerLine(
+                    bookmaker_key="fanduel",
+                    bookmaker_title="FanDuel",
+                    home_odds=-150,
+                    away_odds=130,
+                    last_update="2026-06-01T12:00:00Z",
+                )
+            ],
+        )
+        features = extract_features(market, event, EngineConfig())
+        assert len(features) == 2
+        assert features[0].name_match_score == 1.0
+        assert features[0].outcome_aligned is True
+
+    def test_wrong_event_with_shared_player_rejected(self):
+        """
+        A sportsbook event sharing only ONE player with the market question
+        must not produce features — the name_score gate (both names required)
+        prevents cross-event false positives.
+        """
+        # Market is about Alcaraz vs Sinner
+        market = _make_market(question="Will Alcaraz beat Sinner?")
+        # Wrong event: Alcaraz vs Djokovic (shares Alcaraz but not Sinner)
+        wrong_event = _make_event(
+            home="Carlos Alcaraz",
+            away="Novak Djokovic",
+            event_id="ev_wrong",
+        )
+        features = extract_features(market, wrong_event, EngineConfig())
+        assert features == []  # rejected by name_score == 0.0
+
+    def test_apostrophe_name_with_real_player_norms(self):
+        """Player with apostrophe — verify pipeline handles it end-to-end."""
+        market = _make_market(
+            question="O'Sullivan vs Sinner",
+            prices=["0.45", "0.55"],
+        )
+        event = TennisOddsEvent(
+            event_id="ev_apos",
+            sport_key="tennis_atp",
+            tournament="ATP Test",
+            home_player="Jannik O'Sullivan",
+            away_player="Jannik Sinner",
+            home_player_norm=normalize_player_name("Jannik O'Sullivan"),
+            away_player_norm=normalize_player_name("Jannik Sinner"),
+            commence_time="2026-06-01T12:00:00Z",
+            bookmakers=[
+                BookmakerLine(
+                    bookmaker_key="fanduel",
+                    bookmaker_title="FanDuel",
+                    home_odds=110,
+                    away_odds=-130,
+                    last_update="2026-06-01T12:00:00Z",
+                )
+            ],
+        )
+        features = extract_features(market, event, EngineConfig())
+        assert len(features) == 2
+        assert features[0].name_match_score == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Platform-aware cost buffer
+# ---------------------------------------------------------------------------
+
+class TestPlatformCostBuffer:
+    """Polymarket uses zero cost buffer; Kalshi uses global cost_buffer."""
+
+    def test_polymarket_zero_cost_buffer(self):
+        market = _make_market(prices=["0.55", "0.45"])
+        assert market.platform == "polymarket"
+        event = _make_event()
+        features = extract_features(market, event, EngineConfig())
+        f = next(f for f in features if f.pm_price == 0.55)
+        # pm_price_effective = pm_price + 0.0 (no buffer for polymarket)
+        assert f.pm_price_effective == pytest.approx(0.55, abs=0.0001)
+
+    def test_kalshi_uses_cost_buffer(self):
+        market = NormalizedMarket(
+            platform="kalshi",
+            market_id="k1",
+            event="Alcaraz vs Sinner",
+            market_type="h2h",
+            side="Carlos Alcaraz",
+            line=None,
+            price=0.55,
+            liquidity=None,
+            url=None,
+            timestamp=None,
+            question="Will Alcaraz beat Sinner?",
+            end_date="2026-06-01T18:00:00Z",
+            outcome_prices=["0.55", "0.45"],
+            event_slug="KXTEST-26JUN01ALCSNN",
+        )
+        event = _make_event()
+        cfg = EngineConfig()  # cost_buffer=0.01
+        features = extract_features(market, event, cfg)
+        f = next(f for f in features if f.pm_price == 0.55)
+        # pm_price_effective = 0.55 + 0.01 = 0.56
+        assert f.pm_price_effective == pytest.approx(0.56, abs=0.0001)
+
+    def test_polymarket_edge_higher_than_kalshi(self):
+        """Same prices, same event — Polymarket edge is 1 cent higher."""
+        event = _make_event()
+        cfg = EngineConfig()
+
+        poly_market = _make_market(prices=["0.55", "0.45"])
+        poly_features = extract_features(poly_market, event, cfg)
+        poly_f = next(f for f in poly_features if f.pm_price == 0.55)
+
+        kalshi_market = NormalizedMarket(
+            platform="kalshi",
+            market_id="k1",
+            event="Alcaraz vs Sinner",
+            market_type="h2h",
+            side="Carlos Alcaraz",
+            line=None,
+            price=0.55,
+            liquidity=None,
+            url=None,
+            timestamp=None,
+            question="Will Alcaraz beat Sinner?",
+            end_date="2026-06-01T18:00:00Z",
+            outcome_prices=["0.55", "0.45"],
+            event_slug="KXTEST-26JUN01ALCSNN",
+        )
+        kalshi_features = extract_features(kalshi_market, event, cfg)
+        kalshi_f = next(f for f in kalshi_features if f.pm_price == 0.55)
+
+        assert poly_f.edge == pytest.approx(kalshi_f.edge + cfg.cost_buffer, abs=0.0001)

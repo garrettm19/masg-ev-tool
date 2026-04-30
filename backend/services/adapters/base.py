@@ -42,6 +42,12 @@ class NormalizedMarket:
     outcome_prices: list[str] | None  # e.g. ["0.73", "0.27"] — Yes/No prices
     event_slug: str | None      # platform-specific slug for URL construction
 
+    # Data quality
+    bid_ask_spread: float | None = None  # yes_ask - yes_bid; None if unavailable
+
+    # Staleness tracking
+    fetched_at: float = 0.0     # time.time() when price data was obtained
+
 
 @runtime_checkable
 class MarketAdapter(Protocol):

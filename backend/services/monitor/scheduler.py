@@ -29,6 +29,7 @@ from services.monitor.ws_kalshi import KalshiWsConsumer
 from services.monitor.state import AlertStateStore
 from services.monitor.notifier import PushoverNotifier, DryRunNotifier
 from services.opportunities import fetch_opportunities, EvaluatedOpportunity
+from services.snapshot import store_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,13 @@ class MonitorScheduler:
                 )
                 opportunities, meta = await fetch_opportunities(cfg=cfg)
 
+                # Cache for dashboard reads
+                store_snapshot(opportunities, meta, trigger=trigger)
+
                 result = await self.alert_manager.run_cycle(opportunities)
+
+                # Update WS watch lists from pipeline results
+                self._update_watch_lists(opportunities)
 
                 self._total_cycles += 1
                 self._total_alerts_sent += result.alerts_sent
@@ -133,6 +140,22 @@ class MonitorScheduler:
             except Exception as exc:
                 logger.error("Monitor pipeline failed [%s]: %s", trigger, exc)
                 return None
+
+    def _update_watch_lists(self, opportunities: list[EvaluatedOpportunity]) -> None:
+        """Feed pipeline results into WS consumers so they know which markets to watch."""
+        pm_ids: set[str] = set()
+        kalshi_tickers: set[str] = set()
+        for opp in opportunities:
+            if opp.status == "SKIP":
+                continue
+            if opp.platform == "polymarket":
+                pm_ids.add(opp.market_id)
+            elif opp.platform == "kalshi":
+                kalshi_tickers.add(opp.market_id)
+        if pm_ids:
+            self.pm_ws.watch(pm_ids)
+        if kalshi_tickers:
+            self.kalshi_ws.watch(kalshi_tickers)
 
     # --- Source callbacks ---
 

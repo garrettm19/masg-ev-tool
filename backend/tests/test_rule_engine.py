@@ -25,7 +25,7 @@ def _default_cfg() -> EngineConfig:
 
 
 def _buy_ready(**overrides) -> MarketFeatures:
-    """Return a MarketFeatures that passes ALL 20 rules (→ BUY)."""
+    """Return a MarketFeatures that passes ALL 23 rules (→ BUY)."""
     defaults = dict(
         platform="polymarket",
         market_id="test",
@@ -99,7 +99,7 @@ class TestBaselineClassification:
 
     def test_rule_count(self):
         """Ensure we track every rule — update this if rules are added/removed."""
-        assert len(POLICY_TABLE) == 20
+        assert len(POLICY_TABLE) == 23
 
 
 # ---------------------------------------------------------------------------
@@ -765,9 +765,9 @@ class TestKelly:
 
 class TestConfigOverrides:
     def test_lower_min_edge_promotes_to_buy(self):
-        f = _buy_ready(edge=0.03)
-        cfg = EngineConfig(min_edge=0.02)
-        status, _ = evaluate_rules(f, cfg)
+        # NBA has per-sport min_edge=0.03, so a 3.5% edge passes
+        f = _buy_ready(edge=0.035, sport="basketball_nba")
+        status, _ = evaluate_rules(f, _default_cfg())
         assert status == "BUY"
 
     def test_higher_survival_threshold(self):
@@ -790,6 +790,119 @@ class TestConfigOverrides:
         status, _ = evaluate_rules(f, cfg)
         assert status == "WATCH"
         assert "INCOMPLETE_METADATA" in f.downgrade_reasons
+
+
+# ---------------------------------------------------------------------------
+# Per-sport edge thresholds
+# ---------------------------------------------------------------------------
+
+class TestPerSportEdgeThreshold:
+    """Per-sport min_edge from SportConfig controls the edge threshold rule."""
+
+    def test_nba_passes_at_3_5_percent(self):
+        """NBA has min_edge=0.03 — a 3.5% edge passes."""
+        f = _buy_ready(edge=0.035, sport="basketball_nba")
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "BUY"
+
+    def test_nba_fails_at_2_5_percent(self):
+        """NBA has min_edge=0.03 — a 2.5% edge fails."""
+        f = _buy_ready(edge=0.025, sport="basketball_nba")
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "WATCH"
+        assert "EDGE_BELOW_THRESHOLD" in f.downgrade_reasons
+
+    def test_mlb_passes_at_3_5_percent(self):
+        """MLB has min_edge=0.03 — a 3.5% edge passes."""
+        f = _buy_ready(edge=0.035, sport="baseball_mlb")
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "BUY"
+
+    def test_nhl_passes_at_3_5_percent(self):
+        """NHL has min_edge=0.03 — a 3.5% edge passes."""
+        f = _buy_ready(edge=0.035, sport="icehockey_nhl")
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "BUY"
+
+    def test_mma_fails_at_3_5_percent(self):
+        """MMA uses default min_edge=0.05 — a 3.5% edge fails."""
+        f = _buy_ready(edge=0.035, sport="mma_mixed_martial_arts")
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "WATCH"
+        assert "EDGE_BELOW_THRESHOLD" in f.downgrade_reasons
+
+    def test_mma_passes_at_5_5_percent(self):
+        """MMA uses default min_edge=0.05 — a 5.5% edge passes."""
+        f = _buy_ready(edge=0.055, sport="mma_mixed_martial_arts")
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "BUY"
+
+    def test_unknown_sport_uses_global_default(self):
+        """Unknown sport falls back to EngineConfig.min_edge (5%)."""
+        f = _buy_ready(edge=0.035, sport="unknown_sport")
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "WATCH"
+        assert "EDGE_BELOW_THRESHOLD" in f.downgrade_reasons
+
+    def test_wide_market_overrides_sport_threshold(self):
+        """Wide market threshold (8%) takes precedence over sport threshold (3%)."""
+        f = _buy_ready(
+            edge=0.05,
+            sport="basketball_nba",
+            fanduel_line_width=0.40,
+            fanduel_line_width_label="Wide",
+        )
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "WATCH"
+        assert "EDGE_BELOW_THRESHOLD" in f.downgrade_reasons
+
+
+# ---------------------------------------------------------------------------
+# Price-probability coherence (side inversion detection)
+# ---------------------------------------------------------------------------
+
+class TestPriceProbCoherence:
+    def test_pass_normal_edge(self):
+        """Normal: pm_price=0.55, p_true=0.65, divergence=0.10 — passes."""
+        f = _buy_ready(pm_price=0.55, p_true=0.65)
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert "PRICE_PROB_DIVERGENCE" not in f.reject_reasons
+
+    def test_fail_side_inversion(self):
+        """Inverted: pm_price=0.20, p_true=0.65, divergence=0.45 — SKIP."""
+        f = _buy_ready(pm_price=0.20, pm_price_effective=0.21, p_true=0.65, edge=0.44)
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "SKIP"
+        assert "PRICE_PROB_DIVERGENCE" in f.reject_reasons
+
+    def test_pass_at_threshold(self):
+        """At threshold: divergence=0.40 — passes."""
+        f = _buy_ready(pm_price=0.25, pm_price_effective=0.26, p_true=0.65, edge=0.39)
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert "PRICE_PROB_DIVERGENCE" not in f.reject_reasons
+
+    def test_fail_above_threshold(self):
+        """Above threshold: divergence=0.41 — SKIP."""
+        f = _buy_ready(pm_price=0.24, pm_price_effective=0.25, p_true=0.65, edge=0.40)
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "SKIP"
+        assert "PRICE_PROB_DIVERGENCE" in f.reject_reasons
+
+    def test_catches_mls_inversion_pattern(self):
+        """
+        The specific MLS bug: Inter Miami at 20.5c with -240 FD (p_true ~61%).
+        Divergence = |0.61 - 0.205| = 0.405 > 0.40 → SKIP.
+        """
+        f = _buy_ready(pm_price=0.205, pm_price_effective=0.215, p_true=0.61, edge=0.395)
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert status == "SKIP"
+        assert "PRICE_PROB_DIVERGENCE" in f.reject_reasons
+
+    def test_pass_legitimate_high_edge(self):
+        """Legitimate edge: pm_price=0.40, p_true=0.65, divergence=0.25 — passes."""
+        f = _buy_ready(pm_price=0.40, pm_price_effective=0.41, p_true=0.65, edge=0.24)
+        status, _ = evaluate_rules(f, _default_cfg())
+        assert "PRICE_PROB_DIVERGENCE" not in f.reject_reasons
 
 
 # ---------------------------------------------------------------------------

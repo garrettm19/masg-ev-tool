@@ -73,20 +73,29 @@ def classify_pm_market_type(question: str) -> str:
     """
     q = question.lower()
 
-    # Outright / futures — tournament/season winner questions (must precede h2h)
+    # Outright / futures — tournament/season/league winner questions (must precede h2h)
     if re.search(r'win the \d{4}', q):
         return "outright"
-    if re.search(r'\b(?:champion|championship|grey cup|super bowl|stanley cup)\b', q) and not re.search(r'\bvs\.?\b|\bversus\b', q):
-        if re.search(r'\bwin\b|\bwinner\b', q):
+    if re.search(r'win the \d{4}[–-]\d{2,4}', q):
+        return "outright"
+    outright_kw = r'\b(?:champion|championship|grey cup|super bowl|stanley cup|mls cup|world series|nba finals|world cup|serie a|la liga|bundesliga|ligue 1|premier league|league winner|cup winner|mvp|top scorer|golden boot|ballon|award)\b'
+    if re.search(outright_kw, q):
+        if not re.search(r'\bvs\.?\b|\bversus\b|\bbeat\b', q):
             return "outright"
     if re.search(r'\b(?:open|slam|wimbledon|masters)\b', q) and not re.search(r'\bvs\.?\b|\bversus\b|:\s*\w+\s+vs', q):
         if re.search(r'\bwin\b|\bwinner\b', q):
             return "outright"
+    # Generic "Will X win the YYYY ..." without an opponent → outright
+    if re.search(r'win the \d{4}', q) and not re.search(r'\bvs\.?\b|\bversus\b|\bbeat\b', q):
+        return "outright"
 
-    # MMA / boxing props (not h2h — skip for now)
+    # Props — individual player stats, method of victory, specials
     if re.search(r'\b(?:knockout|ko|tko|submission|decision|distance|method)\b', q):
         if not re.search(r'\bwin\b.*\bvs\b|\bvs\b.*\bwin\b', q):
             return "prop"
+    # "Will X be the top scorer?" / "Will X score Y goals?" / first inning props etc.
+    if re.search(r'\b(?:top scorer|goal scorer|most goals|most assists|score \d+|relocated|suspended|cancelled|first inning|1st inning|both teams to score|clean sheet|penalty|red card|yellow card|corner|postseason|clinch|end in a draw|draw\?)\b', q):
+        return "prop"
 
     # Rounds over/under (MMA / boxing)
     if re.search(r'\bo/u\s+\d+\.5\s+rounds?\b', q) or re.search(r'\brounds?\s+o/u\b', q):
@@ -110,16 +119,18 @@ def classify_pm_market_type(question: str) -> str:
     if re.search(r'\bo/u\s+\d', q) or re.search(r'\bmatch\s+o/u\b', q):
         return "totals"
 
-    # H2H / match / fight / game winner
-    if re.search(r'\b(?:vs\.?|versus|beat|defeat|win|winner|match\s+winner|advance|fight)\b', q):
+    # H2H / match — require explicit opponent mention (beat/vs) or match context
+    if re.search(r'\b(?:vs\.?|versus|beat|defeat)\b', q):
         return "h2h"
     if re.search(r'\w+\s*/\s*\w+', question):   # "Player A / Player B"
         return "h2h"
     if re.search(r':\s*.+\bvs\b', q):
         return "h2h"
-    # Team sport game patterns
-    if re.search(r'\bgame\b|\bmatch\b|\bbout\b', q):
+    # "Will X win the Y match/game/bout?" — requires match/game context AND not a season/league
+    if re.search(r'\b(?:match\s+winner|win the match|win the game|win the bout|fight)\b', q):
         return "h2h"
+    # Bare "Will X win?" with no tournament/league context — ambiguous, not h2h
+    # Only classify as h2h if there's explicit head-to-head context
 
     return "unknown"
 
@@ -236,8 +247,8 @@ def _date_score(
         return 0.95, delta_h
     if delta_h <= 168.0:     # ≤ 7 days — typical tournament window
         return 0.85, delta_h
-    if delta_h <= 504.0:     # ≤ 21 days — covers tournament-end close dates
-        return 0.75, delta_h
+    if delta_h <= 504.0:     # ≤ 21 days — confidence 0.895 → below buy threshold
+        return 0.70, delta_h
     return 0.0, delta_h      # > 21 days — likely wrong event
 
 

@@ -1,22 +1,15 @@
-import { fetchOpportunities } from "@/lib/api";
+import { fetchSnapshot } from "@/lib/api";
 import { DashboardClient } from "./components/dashboard/DashboardClient";
 
 export default async function DashboardPage() {
-  let data;
+  // Try to load a cached snapshot (read-only, instant).
+  // If no snapshot exists or backend is unreachable, pass null —
+  // the client component will fetch on mount. Never block on pipeline.
+  let data = null;
   try {
-    data = await fetchOpportunities();
+    data = await fetchSnapshot();
   } catch {
-    return (
-      <main className="flex items-center justify-center h-[80vh]">
-        <div className="font-mono text-xs text-center" style={{ color: "#374151" }}>
-          <p style={{ color: "#ef4444" }}>● CONNECTION ERROR</p>
-          <p className="mt-2">Backend unreachable on port 8000</p>
-          <p className="mt-1 text-[10px]" style={{ color: "#374151" }}>
-            Check ODDS_API_KEY is set and uvicorn is running
-          </p>
-        </div>
-      </main>
-    );
+    // Backend unreachable — client will retry on mount
   }
 
   return <DashboardClient initialData={data} />;

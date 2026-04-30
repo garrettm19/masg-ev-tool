@@ -30,7 +30,8 @@ from services.engine_config import EngineConfig
 from services.feature_extractor import extract_features
 from services.matcher import SUPPORTED_SPORTSBOOK_MARKET_TYPES
 from services.normalizer import last_name
-from services.odds_provider import fetch_odds
+from services.odds_provider import fetch_odds, fetch_props
+from services.prop_extractor import extract_prop_features
 from services.rule_engine import (
     MarketFeatures,
     RuleResult,
@@ -48,6 +49,59 @@ DEFAULT_CONFIG = EngineConfig()
 
 # Default adapter set
 DEFAULT_ADAPTERS: list[MarketAdapter] = [PolymarketAdapter(), KalshiAdapter()]
+
+
+# ---------------------------------------------------------------------------
+# Series dedup — keep only closest-date match per market
+# ---------------------------------------------------------------------------
+
+def _dedup_to_best_date_match(features: list[MarketFeatures]) -> list[MarketFeatures]:
+    """
+    When multiple sportsbook events match the same prediction market
+    (e.g., Game 1 and Game 2 of a series), keep only the features from
+    the closest-date event. This prevents cross-game price mismatches.
+
+    Groups by (platform, market_id) and for each group, finds the event_id
+    with the best date_score. Features from other events are dropped.
+    """
+    # Group by (platform, market_id) → {event_id: best_date_score}
+    market_events: dict[tuple[str, str], dict[str, float]] = {}
+    for f in features:
+        key = (f.platform, f.market_id)
+        market_events.setdefault(key, {})
+        eid = f.matched_event_id
+        if eid not in market_events[key] or f.date_score > market_events[key][eid]:
+            market_events[key][eid] = f.date_score
+
+    # For each market, find the best event_id (highest date_score)
+    best_event: dict[tuple[str, str], str] = {}
+    for key, events in market_events.items():
+        if len(events) <= 1:
+            # Only one event matched — no series dedup needed
+            best_event[key] = next(iter(events))
+            continue
+        # Multiple events: keep the one with the best date_score
+        best_eid = max(events, key=events.get)
+        best_event[key] = best_eid
+        logger.info(
+            "Series dedup: market %s matched %d events, keeping %s (date_score=%.2f)",
+            key, len(events), best_eid, events[best_eid],
+        )
+
+    # Filter features to only keep the best event per market
+    result: list[MarketFeatures] = []
+    for f in features:
+        key = (f.platform, f.market_id)
+        if key not in best_event or f.matched_event_id == best_event[key]:
+            result.append(f)
+
+    if len(result) < len(features):
+        logger.info(
+            "Series dedup: %d features → %d (dropped %d cross-game matches)",
+            len(features), len(result), len(features) - len(result),
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +236,12 @@ class EvaluatedOpportunity:
     date_delta_hours: float | None
     rule_evaluations: list[dict]       # full rule-by-rule trace
 
+    # Data quality
+    bid_ask_spread: float | None = None  # yes_ask - yes_bid; None if unavailable
+
+    # Staleness tracking
+    price_fetched_at: float = 0.0      # when platform price was obtained
+
 
 def _features_to_opportunity(
     f: MarketFeatures,
@@ -218,6 +278,8 @@ def _features_to_opportunity(
         status=f.status,
         reject_reasons=f.reject_reasons,
         downgrade_reasons=f.downgrade_reasons,
+        bid_ask_spread=f.bid_ask_spread,
+        price_fetched_at=f.price_fetched_at,
         home_tokens=f.home_tokens,
         away_tokens=f.away_tokens,
         name_match_score=f.name_match_score,
@@ -269,17 +331,27 @@ async def fetch_opportunities(
         adapters = DEFAULT_ADAPTERS
 
     # --- Fetch all sources in parallel ---
-    adapter_results = await asyncio.gather(
-        *[a.fetch_markets() for a in adapters],
-        fetch_odds(bookmaker=_BOOKMAKER, max_sports=25),
-    )
+    fetch_tasks = [a.fetch_markets() for a in adapters]
+    fetch_tasks.append(fetch_odds(bookmaker=_BOOKMAKER, max_sports=25))
+    if cfg.enable_props:
+        fetch_tasks.append(fetch_props(bookmaker=_BOOKMAKER))
 
-    odds_events, meta = adapter_results[-1]
+    adapter_results = await asyncio.gather(*fetch_tasks)
+
+    # Unpack: adapters first, then h2h odds, then optionally props
+    n_adapters = len(adapters)
+    odds_events, meta = adapter_results[n_adapters]
     all_markets: list[NormalizedMarket] = []
-    for adapter_markets in adapter_results[:-1]:
+    for adapter_markets in adapter_results[:n_adapters]:
         all_markets.extend(adapter_markets)
 
-    # --- Pass A: Feature Extraction ---
+    prop_events = []
+    if cfg.enable_props and len(adapter_results) > n_adapters + 1:
+        prop_events, prop_meta = adapter_results[n_adapters + 1]
+        meta["props_fetched"] = prop_meta.get("props_fetched", 0)
+        meta["props_events"] = prop_meta.get("props_events", 0)
+
+    # --- Pass A: H2H Feature Extraction ---
     all_features: list[MarketFeatures] = []
     for market in all_markets:
         for event in odds_events:
@@ -287,12 +359,49 @@ async def fetch_opportunities(
             all_features.extend(features)
 
     logger.info(
-        "Pass A: %d markets × %d events → %d feature candidates",
+        "Pass A (h2h): %d markets × %d events → %d feature candidates",
         len(all_markets), len(odds_events), len(all_features),
     )
 
+    # --- Pass A (props): extract prop features separately ---
+    prop_feature_count = 0
+    if cfg.enable_props and prop_events:
+        for prop_event in prop_events:
+            event_prop_count = 0
+            for market in all_markets:
+                if event_prop_count >= cfg.max_props_per_event:
+                    break
+                prop_feats = extract_prop_features(market, prop_event, cfg)
+                all_features.extend(prop_feats)
+                event_prop_count += len(prop_feats)
+                prop_feature_count += len(prop_feats)
+        logger.info(
+            "Pass A (props): %d events × %d markets → %d prop features (cap=%d/event)",
+            len(prop_events), len(all_markets), prop_feature_count, cfg.max_props_per_event,
+        )
+
+    # --- Alt-demand measurement: count totals candidates with no matching FD line ---
+    _alt_raw: dict[str, int] = {}
+    _alt_actionable: dict[str, int] = {}
+    for f in all_features:
+        if f.market_type == "totals" and not f.line_match_exact:
+            _alt_raw[f.sport] = _alt_raw.get(f.sport, 0) + 1
+            if f.has_bookmaker_data and f.line is not None:
+                _alt_actionable[f.sport] = _alt_actionable.get(f.sport, 0) + 1
+    if _alt_raw:
+        parts = " ".join(f"{k}={v}" for k, v in sorted(_alt_raw.items()))
+        logger.info("[alt-demand] raw: %s total=%d", parts, sum(_alt_raw.values()))
+    if _alt_actionable:
+        parts = " ".join(f"{k}={v}" for k, v in sorted(_alt_actionable.items()))
+        logger.info("[alt-demand] actionable: %s total=%d", parts, sum(_alt_actionable.values()))
+
     # --- Ambiguity enrichment (between Pass A and B) ---
     _enrich_ambiguity_metrics(all_features)
+
+    # --- Series dedup: when multiple FD events match the same PM market,
+    #     keep only the closest-date match to prevent cross-game mismatches
+    #     in multi-game series (MLB 3-game, NBA back-to-back, etc.) ---
+    all_features = _dedup_to_best_date_match(all_features)
 
     # --- Pass B: Rule Engine ---
     all_evaluated: list[EvaluatedOpportunity] = []
@@ -315,10 +424,13 @@ async def fetch_opportunities(
     platforms_fetched = [a.platform_name for a in adapters]
 
     dropped_by_type: dict[str, int] = {}
+    kalshi_series_counts: dict[str, dict[str, int]] = {}
     for adapter in adapters:
         if hasattr(adapter, "dropped_by_type"):
             for k, v in adapter.dropped_by_type.items():
                 dropped_by_type[k] = dropped_by_type.get(k, 0) + v
+        if hasattr(adapter, "series_counts"):
+            kalshi_series_counts.update(adapter.series_counts)
 
     logger.info(
         "Pass B: %d candidates → BUY=%d WATCH=%d SKIP=%d → %d after dedup",
@@ -334,6 +446,9 @@ async def fetch_opportunities(
     meta["markets_dropped_by_type"] = dropped_by_type
     meta["platforms_fetched"] = platforms_fetched
     meta["status_counts"] = status_counts
+    meta["kalshi_series_counts"] = kalshi_series_counts
+    if cfg.enable_props:
+        meta["prop_features"] = prop_feature_count
 
     return active, meta
 

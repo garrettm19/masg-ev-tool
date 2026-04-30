@@ -111,10 +111,16 @@ class MarketFeatures:
     home_last_name_collision: bool = False   # home last name matches BOTH event players
     away_last_name_collision: bool = False   # away last name matches BOTH event players
 
+    # Data quality
+    bid_ask_spread: float | None = None      # yes_ask - yes_bid; None if unavailable
+
     # Metadata quality
     has_end_date: bool = False               # market has a resolution date
     has_outcome_prices: bool = False          # market has parseable outcome prices
     prices_internally_consistent: bool = True # YES + NO prices sum to ~1.0
+
+    # Staleness tracking
+    price_fetched_at: float = 0.0      # when platform price was obtained
 
     # Observability: normalized player tokens (for debugging)
     home_tokens: tuple[str, ...] = ()
@@ -207,9 +213,16 @@ def _min_true_prob(f: MarketFeatures, c: EngineConfig) -> bool:
 
 
 def _edge_meets_threshold(f: MarketFeatures, c: EngineConfig) -> bool:
+    from services.sports_config import config_for_odds_key
+
+    # Wide markets always use the stricter wide-market threshold
     if f.fanduel_line_width > c.max_line_width_for_normal_threshold:
         return f.edge >= c.wide_market_min_edge
-    return f.edge >= c.min_edge
+
+    # Per-sport threshold: liquid sports (NBA, MLB, NHL) use lower min_edge
+    sc = config_for_odds_key(f.sport)
+    threshold = sc.min_edge if sc else c.min_edge
+    return f.edge >= threshold
 
 
 def _fd_confidence_not_low(f: MarketFeatures, c: EngineConfig) -> bool:
@@ -236,6 +249,63 @@ def _no_excess_competing_matches(f: MarketFeatures, c: EngineConfig) -> bool:
 def _no_last_name_collision(f: MarketFeatures, c: EngineConfig) -> bool:
     """Pass if neither player's last name collides with both event players."""
     return not f.home_last_name_collision and not f.away_last_name_collision
+
+
+def _price_probability_coherent(f: MarketFeatures, c: EngineConfig) -> bool:
+    """
+    Pass if pm_price and p_true are on the same side of the market.
+
+    When the market price diverges wildly from the devigged probability
+    (e.g., pm_price=0.20 vs p_true=0.65), the YES/NO side is likely
+    inverted — the price is for the opponent, not the featured team.
+    """
+    if f.p_true <= 0 or f.pm_price <= 0:
+        return True  # can't check without valid data
+    divergence = abs(f.p_true - f.pm_price)
+    return divergence <= c.max_price_prob_divergence
+
+
+def _date_not_stale(f: MarketFeatures, c: EngineConfig) -> bool:
+    """
+    Pass if the date delta between PM market and FD event is within bounds.
+
+    When a PM market for a future game (no FD odds yet) matches the nearest
+    existing FD event days away, the edge is meaningless — different game.
+    Skip when delta exceeds max_date_delta_hours AND there's no competing
+    match (which would indicate a real series).
+    """
+    if f.date_delta_hours is None:
+        return True  # no date info — can't check
+    if f.competing_matches > 1:
+        return True  # series — date proximity already handled by series dedup
+    return f.date_delta_hours <= c.max_date_delta_hours
+
+
+def _edge_plausible(f: MarketFeatures, c: EngineConfig) -> bool:
+    """
+    Pass if the edge is within a plausible range for this sport.
+
+    Uses sport-specific max_plausible_edge from SportConfig when available,
+    falls back to the global EngineConfig.max_plausible_edge.
+    """
+    if f.edge <= 0:
+        return True  # no edge — nothing to check
+
+    # Look up sport-specific limit
+    from services.sports_config import SPORTS
+    limit = c.max_plausible_edge  # global fallback
+    for sport_key, sc in SPORTS.items():
+        # Match by prefix: f.sport is an Odds API key like "baseball_mlb" or
+        # "tennis_atp_french_open"; sport_key is "baseball_mlb" or "tennis"
+        if f.sport.startswith(sport_key) or sport_key.startswith(f.sport.split("_")[0]):
+            limit = sc.max_plausible_edge
+            break
+        # Also check explicit odds_api_keys
+        if f.sport in sc.odds_api_keys:
+            limit = sc.max_plausible_edge
+            break
+
+    return f.edge <= limit
 
 
 def _metadata_complete(f: MarketFeatures, c: EngineConfig) -> bool:
@@ -333,7 +403,25 @@ POLICY_TABLE: list[PolicyRule] = [
         description="Handicap favored player must match between platforms",
     ),
 
+    # --- Stage: date validation ---
+    PolicyRule(
+        rule_name="date_not_stale",
+        stage="date",
+        severity="CRITICAL",
+        condition_fn=_date_not_stale,
+        reason_code="DATE_TOO_FAR",
+        description="PM market date is too far from FD event — likely different game",
+    ),
+
     # --- Stage: pricing ---
+    PolicyRule(
+        rule_name="price_prob_coherence",
+        stage="pricing",
+        severity="CRITICAL",
+        condition_fn=_price_probability_coherent,
+        reason_code="PRICE_PROB_DIVERGENCE",
+        description="Market price and true probability diverge too much — likely side inversion",
+    ),
     PolicyRule(
         rule_name="positive_edge",
         stage="pricing",
@@ -375,6 +463,15 @@ POLICY_TABLE: list[PolicyRule] = [
         condition_fn=_fd_confidence_not_low,
         reason_code="FD_CONFIDENCE_LOW",
         description="FanDuel confidence is Low (high overround or wide line)",
+    ),
+
+    PolicyRule(
+        rule_name="edge_plausible",
+        stage="quality",
+        severity="DOWNGRADE",
+        condition_fn=_edge_plausible,
+        reason_code="EDGE_IMPLAUSIBLE",
+        description="Edge exceeds plausible maximum — likely data error or wrong game",
     ),
 
     # --- Stage: ambiguity (DOWNGRADE — uncertain matching must not BUY) ---

@@ -46,6 +46,18 @@ class EngineConfig:
     min_confidence_gap: float = 0.05               # gap between 1st and 2nd best match
     max_competing_matches: int = 1                 # max events that survive matching
 
+    # --- Price-probability coherence ---
+    max_price_prob_divergence: float = 0.40        # |pm_price - p_true| above this → likely side inversion
+
+    # --- Date strictness ---
+    max_date_delta_hours: float = 72.0             # beyond 3 days with no competing match → SKIP
+
+    # --- Edge sanity ---
+    max_plausible_edge: float = 0.20               # edges above 20% are likely data errors → DOWNGRADE
+
     # --- Metadata completeness ---
     require_end_date: bool = False                 # if True, missing end_date → downgrade
-    min_prices_count: int = 2                      # minimum outcome prices for valid market
+
+    # --- Player props ---
+    enable_props: bool = False                     # feature flag — OFF by default
+    max_props_per_event: int = 20                  # cap prop features per game to prevent explosion

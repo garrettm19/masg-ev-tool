@@ -1,6 +1,8 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { Opportunity } from "@/lib/types";
+import { sportLabel, marketTypeLabel, isPropType, SportRegistryEntry } from "@/lib/sport-labels";
 
 interface Props {
   opportunities: Opportunity[];
@@ -8,10 +10,27 @@ interface Props {
   onSelect?: (opp: Opportunity) => void;
   bankroll?: number;
   isTaken?: (opp: Opportunity) => boolean;
+  sportsRegistry?: Record<string, SportRegistryEntry>;
 }
 
 function fmtPct(n: number, dec = 1): string {
   return `${(n * 100).toFixed(dec)}%`;
+}
+
+function fmtAge(fetchedAt: number, nowSec: number): string {
+  if (!fetchedAt || !nowSec) return "?";
+  const sec = Math.max(0, Math.floor(nowSec - fetchedAt));
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+  return `${Math.floor(sec / 3600)}h`;
+}
+
+function ageColor(fetchedAt: number, nowSec: number): string {
+  if (!fetchedAt || !nowSec) return "#4b5563";
+  const sec = nowSec - fetchedAt;
+  if (sec < 300) return "#2dd4bf";    // <5min green
+  if (sec < 900) return "#fbbf24";    // <15min yellow
+  return "#f87171";                    // >15min red
 }
 
 function fmtOdds(n: number): string {
@@ -39,15 +58,7 @@ function platformColor(p: string): string {
   return "#94a3b8";
 }
 
-function sportLabel(sport: string): string {
-  if (sport.startsWith("tennis")) return "Tennis";
-  if (sport.startsWith("mma")) return "MMA";
-  if (sport.startsWith("cricket")) return "Cricket";
-  if (sport.startsWith("rugby")) return "Rugby";
-  if (sport.startsWith("americanfootball_ufl")) return "UFL";
-  if (sport.startsWith("icehockey_ahl")) return "Hockey";
-  return sport.split("_").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-}
+// sportLabel imported from @/lib/sport-labels
 
 function edgeColor(edge: number): string {
   if (edge >= 0.10) return "#2dd4bf";
@@ -64,12 +75,21 @@ const STATUS_STYLE: Record<Status, { color: string; bg: string; border: string }
   SKIP:  { color: "#4b5563", bg: "rgba(75,85,99,0.05)",    border: "rgba(75,85,99,0.15)"   },
 };
 
+// Legacy constant — kept for any remaining references; new code uses marketTypeLabel()
 const MARKET_TYPE_LABEL: Record<string, string> = {
   h2h: "H2H", handicap: "HCAP", totals: "TOT", first_set: "1ST", unknown: "?",
 };
 
-export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankroll = 1000, isTaken }: Props) {
+export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankroll = 1000, isTaken, sportsRegistry }: Props) {
   const rows = opportunities.slice(0, 30);
+
+  // Stable across SSR/client: starts at 0 (renders "?"), hydrates on mount.
+  const [nowSec, setNowSec] = useState(0);
+  useEffect(() => {
+    setNowSec(Date.now() / 1000);
+    const iv = setInterval(() => setNowSec(Date.now() / 1000), 10_000);
+    return () => clearInterval(iv);
+  }, []);
 
   return (
     <div
@@ -114,9 +134,12 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
               <tr style={{ borderBottom: "1px solid rgba(19,78,74,0.2)" }}>
                 {[
                   { label: "Event",     align: "left"   },
+                  { label: "Type",      align: "left"   },
+                  { label: "Detail",    align: "left"   },
                   { label: "Side",      align: "left"   },
                   { label: "Start",     align: "left"   },
                   { label: "Price",     align: "right"  },
+                  { label: "Age",       align: "center" },
                   { label: "FD Odds",   align: "right"  },
                   { label: "True Prob", align: "right"  },
                   { label: "Edge",      align: "right"  },
@@ -168,7 +191,7 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
                           className="font-mono text-[7px] tracking-wider px-1 py-px rounded uppercase shrink-0"
                           style={{ color: "#67e8f9", background: "rgba(103,232,249,0.08)" }}
                         >
-                          {sportLabel(opp.sport)}
+                          {sportLabel(opp.sport, sportsRegistry)}
                         </span>
                         <span className="font-mono text-[9px]" style={{ color: "#374151" }}>
                           {opp.tournament}
@@ -182,15 +205,59 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
                       </div>
                     </td>
 
+                    {/* Type */}
+                    <td className="px-3 py-3">
+                      <span
+                        className="inline-block font-mono text-[8px] tracking-wider px-1.5 py-0.5 rounded uppercase"
+                        style={isPropType(opp.market_type)
+                          ? { color: "#c084fc", background: "rgba(192,132,252,0.08)" }
+                          : opp.market_type === "totals"
+                            ? { color: "#fbbf24", background: "rgba(251,191,36,0.08)" }
+                            : { color: "#6b7280", background: "rgba(75,85,99,0.06)" }
+                        }
+                      >
+                        {isPropType(opp.market_type) ? "Prop" : opp.market_type === "totals" ? "Total" : "H2H"}
+                      </span>
+                    </td>
+
+                    {/* Detail */}
+                    <td className="px-3 py-3">
+                      {isPropType(opp.market_type) ? (
+                        <span className="font-mono text-[10px]" style={{ color: "#cbd5e1" }}>
+                          {opp.side.replace(/\s+(Over|Under)$/i, "")}{" "}
+                          <span style={{ color: "#c084fc" }}>{marketTypeLabel(opp.market_type)}</span>{" "}
+                          <span style={{ color: "#94a3b8" }}>{opp.line}</span>
+                        </span>
+                      ) : opp.market_type === "totals" ? (
+                        <span className="font-mono text-[10px]" style={{ color: "#cbd5e1" }}>
+                          O/U <span style={{ color: "#fbbf24" }}>{opp.line}</span>
+                        </span>
+                      ) : (
+                        <span className="font-mono text-[10px]" style={{ color: "#4b5563" }}>
+                          Moneyline
+                        </span>
+                      )}
+                    </td>
+
                     {/* Side */}
                     <td className="px-3 py-3">
-                      <span className="font-mono text-[11px] font-medium" style={{ color: "#e2e8f0" }}>
-                        {opp.side.split(" ").pop()}
-                      </span>
-                      {opp.line != null && (
-                        <span className="font-mono text-[9px] ml-1" style={{ color: "#6b7280" }}>
-                          {opp.line > 0 ? `+${opp.line}` : opp.line}
+                      {isPropType(opp.market_type) || opp.market_type === "totals" ? (
+                        <span className="font-mono text-[11px] font-medium" style={{
+                          color: opp.side.toLowerCase().includes("over") ? "#2dd4bf" : "#f87171"
+                        }}>
+                          {opp.side.toLowerCase().includes("over") ? "Over" : opp.side.toLowerCase().includes("under") ? "Under" : opp.side}
                         </span>
+                      ) : (
+                        <>
+                          <span className="font-mono text-[11px] font-medium" style={{ color: "#e2e8f0" }}>
+                            {opp.side}
+                          </span>
+                          {opp.line != null && (
+                            <span className="font-mono text-[9px] ml-1" style={{ color: "#6b7280" }}>
+                              {opp.line > 0 ? `+${opp.line}` : opp.line}
+                            </span>
+                          )}
+                        </>
                       )}
                     </td>
 
@@ -202,6 +269,11 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
                     {/* Price */}
                     <td className="px-3 py-3 text-right font-mono text-[11px]" style={{ color: "#94a3b8" }}>
                       {(opp.pm_price * 100).toFixed(1)}{"¢"}
+                    </td>
+
+                    {/* Age */}
+                    <td className="px-3 py-3 text-center font-mono text-[9px]" style={{ color: ageColor(opp.price_fetched_at, nowSec) }}>
+                      {fmtAge(opp.price_fetched_at, nowSec)}
                     </td>
 
                     {/* FD Odds */}

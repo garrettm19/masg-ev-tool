@@ -13,8 +13,10 @@ Only H2H match-winner markets (KXATPMATCH, KXWTAMATCH) are fetched.
 API: https://api.elections.kalshi.com/trade-api/v2
 Auth: API key via Authorization header.
 """
+import asyncio
 import logging
 import os
+import time
 from collections import defaultdict
 
 import httpx
@@ -33,10 +35,16 @@ class KalshiAdapter:
 
     def __init__(self, api_key: str | None = None):
         self._explicit_key = api_key
+        self._series_counts: dict[str, dict[str, int]] = {}
 
     @property
     def _api_key(self) -> str:
         return self._explicit_key or os.getenv("KALSHI_API_KEY", "")
+
+    @property
+    def series_counts(self) -> dict[str, dict[str, int]]:
+        """Per-series {ticker: {"raw": N, "normalized": M}} from last fetch."""
+        return self._series_counts
 
     async def fetch_markets(self) -> list[NormalizedMarket]:
         """
@@ -52,26 +60,42 @@ class KalshiAdapter:
         headers = {"Authorization": self._api_key}
         all_raw: list[tuple[dict, str, str]] = []  # (market_dict, series, slug)
         match_series = all_kalshi_series()
+        fetch_ts = time.time()
+        raw_per_series: dict[str, int] = {t: 0 for t in match_series}
 
         async with httpx.AsyncClient(timeout=12.0) as client:
             for series_ticker, series_slug in match_series.items():
                 try:
-                    resp = await client.get(
-                        f"{_BASE}/markets",
-                        params={
+                    cursor: str | None = None
+                    while True:
+                        params: dict = {
                             "series_ticker": series_ticker,
                             "status": "open",
-                            "limit": 200,
-                        },
-                        headers=headers,
-                    )
-                    resp.raise_for_status()
-                    for m in resp.json().get("markets", []):
-                        all_raw.append((m, series_ticker, series_slug))
+                            "limit": 1000,
+                            "min_close_ts": int(time.time()),
+                        }
+                        if cursor:
+                            params["cursor"] = cursor
+                        resp = await client.get(
+                            f"{_BASE}/markets",
+                            params=params,
+                            headers=headers,
+                        )
+                        resp.raise_for_status()
+                        body = resp.json()
+                        for m in body.get("markets", []):
+                            all_raw.append((m, series_ticker, series_slug))
+                            raw_per_series[series_ticker] += 1
+                        cursor = body.get("cursor") or None
+                        if not cursor:
+                            break
                 except httpx.HTTPStatusError as exc:
                     logger.error("Kalshi API error %s: %s", series_ticker, exc.response.status_code)
+                    raw_per_series[series_ticker] = -1  # signal error
                 except Exception as exc:
                     logger.error("Kalshi fetch error %s: %s", series_ticker, exc)
+                    raw_per_series[series_ticker] = -1
+                await asyncio.sleep(0.1)  # 10 req/sec pacing; Kalshi Basic tier = 20/sec
 
         # Group by event_ticker (each event has 2 markets — one per player)
         events: dict[str, list[tuple[dict, str, str]]] = defaultdict(list)
@@ -81,10 +105,28 @@ class KalshiAdapter:
                 events[et].append((m, series, slug))
 
         normalized: list[NormalizedMarket] = []
+        norm_per_series: dict[str, int] = {t: 0 for t in match_series}
         for event_ticker, market_group in events.items():
-            nm = _build_event_market(event_ticker, market_group)
-            if nm:
-                normalized.append(nm)
+            nms = _build_event_markets(event_ticker, market_group, fetch_ts)
+            normalized.extend(nms)
+            # Attribute normalized count to the series of the first market in the group
+            if nms and market_group:
+                series_key = market_group[0][1]  # series_ticker
+                norm_per_series[series_key] += len(nms)
+
+        self._series_counts = {
+            t: {"raw": raw_per_series[t], "normalized": norm_per_series[t]}
+            for t in match_series
+        }
+
+        for t in match_series:
+            r, n = raw_per_series[t], norm_per_series[t]
+            if r == -1:
+                logger.warning("[KALSHI] %s → ERROR (API call failed)", t)
+            elif r == 0:
+                logger.info("[KALSHI] %s → raw: 0", t)
+            else:
+                logger.info("[KALSHI] %s → raw: %d, normalized: %d", t, r, n)
 
         logger.info(
             "KalshiAdapter: %d raw markets, %d events, %d normalized",
@@ -100,29 +142,144 @@ def _safe_float(val: object) -> float:
         return 0.0
 
 
-def _build_event_market(
+def _identify_m1_team(
+    m1_ticker: str,
+    m1_title: str,
+    m2_ticker: str,
+    m2_title: str,
+) -> str:
+    """
+    Identify which team/player M1 represents.
+
+    Strategy order:
+      1. "Will X win" title format → extract subject directly (tennis, EPL)
+      2. Ticker suffix matching against title team names (UFL, MLB, NBA)
+
+    Kalshi title formats:
+      "Will Casper Ruud win the Moutet vs Ruud : Round Of 32 match?"
+      "Birmingham Stallions vs St. Louis Battlehawks winner?"
+      "Indiana at Brooklyn Winner?"
+      "Texas vs Los Angeles D Winner?"
+    """
+    import re
+
+    # Strategy 1: "Will X win" — most reliable when available
+    subject = _extract_title_subject(m1_title)
+    if subject:
+        return subject
+
+    # Strategy 2: ticker suffix matching against title teams
+    m1_suffix = m1_ticker.rsplit("-", 1)[-1].lower() if "-" in m1_ticker else ""
+    m2_suffix = m2_ticker.rsplit("-", 1)[-1].lower() if "-" in m2_ticker else ""
+
+    if not m1_suffix:
+        return ""
+
+    # Parse team names — split on "vs", "vs.", or "at"
+    title_clean = re.sub(r'\s*(?:winner\??|match\??)$', '', m1_title, flags=re.IGNORECASE).strip()
+    parts = re.split(r'\s+(?:vs\.?|at)\s+', title_clean, maxsplit=1)
+    if len(parts) != 2:
+        return ""
+
+    team_a = parts[0].strip()
+    team_b = parts[1].strip()
+
+    # Match M1's suffix against team names
+    # Suffix can be a prefix of a word ("tex" → "texas") or appear as a
+    # substring of a word ("bhm" in "birmingham", "lad" in "los angeles dodgers")
+    team_a_lower = team_a.lower()
+    team_b_lower = team_b.lower()
+
+    def _suffix_matches(suffix: str, team: str) -> bool:
+        # Check if suffix starts any word (common: "tex"→"texas", "stl"→"st.")
+        if any(word.startswith(suffix) for word in team.split()):
+            return True
+        # Check if suffix appears as substring in team name (abbreviation)
+        if suffix in team.replace(" ", "").replace(".", ""):
+            return True
+        return False
+
+    a_match = _suffix_matches(m1_suffix, team_a_lower)
+    b_match = _suffix_matches(m1_suffix, team_b_lower)
+
+    if a_match and not b_match:
+        return team_a
+    if b_match and not a_match:
+        return team_b
+
+    # Fallback: check M2's suffix
+    a_match2 = _suffix_matches(m2_suffix, team_a_lower)
+    b_match2 = _suffix_matches(m2_suffix, team_b_lower)
+
+    if a_match2 and not b_match2:
+        return team_b
+    if b_match2 and not a_match2:
+        return team_a
+
+    return ""
+
+
+def _extract_match_date_from_ticker(event_ticker: str) -> str | None:
+    """
+    Extract match date from Kalshi event ticker.
+
+    Tickers like 'KXATPMATCH-26APR08MOURUU' embed the date as YYMONDD.
+    Returns ISO format 'YYYY-MM-DDT23:59:00Z' or None.
+    """
+    import re
+    # Match YYMMMDD pattern (e.g., 26APR08, 26APR12)
+    m = re.search(r'-(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})', event_ticker, re.IGNORECASE)
+    if not m:
+        return None
+    year = 2000 + int(m.group(1))
+    month_map = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+                 "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+    month = month_map.get(m.group(2).upper(), 0)
+    day = int(m.group(3))
+    if month == 0:
+        return None
+    return f"{year}-{month:02d}-{day:02d}T23:59:00Z"
+
+
+def _extract_title_subject(title: str) -> str:
+    """
+    Extract the subject player/team from a Kalshi market title.
+
+    Only handles the "Will {Subject} win/beat" format where the subject
+    is explicitly named. Does NOT handle "X vs Y winner?" format
+    because both paired markets share the same title and subject
+    extraction can't distinguish M1 from M2 — that requires ticker-suffix
+    matching in _identify_m1_team.
+
+    Returns the subject name, or empty string if parsing fails.
+    """
+    import re
+    m = re.match(r"^Will\s+(.+?)\s+(?:win|beat)\b", title, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
+def _build_event_markets(
     event_ticker: str,
     market_group: list[tuple[dict, str, str]],
-) -> NormalizedMarket | None:
+    fetch_ts: float = 0.0,
+) -> list[NormalizedMarket]:
     """
-    Build one NormalizedMarket from a paired Kalshi event.
+    Build NormalizedMarket(s) from a Kalshi event.
 
-    For a match "A vs B", Kalshi has:
-      Market 1: "Will A win?"  yes_ask / no_ask
-      Market 2: "Will B win?"  yes_ask / no_ask
+    2-way events (tennis, NBA, etc.): emits ONE NormalizedMarket with
+    cross-market best prices.
 
-    Buying Yes-A = buying No-B (same outcome, possibly different price).
-    We pick the cheapest route for each player:
-      best_price_A = min(M1.yes_ask, M2.no_ask)
-      best_price_B = min(M2.yes_ask, M1.no_ask)
-
-    Emits a single NormalizedMarket with outcome_prices = [best_A, best_B]
-    where A is the player whose name appears first in the event title.
+    3-way events (soccer): emits TWO NormalizedMarkets — one per team —
+    each with its own direct yes_ask price.  The draw market is excluded
+    from pricing because "No Home" ≠ "Buy Away" when a draw exists.
     """
     if len(market_group) < 2:
         # Single market — can't pair. Use it directly.
         m, series, slug = market_group[0]
-        return _single_market_fallback(m, series, slug)
+        nm = _single_market_fallback(m, series, slug, fetch_ts)
+        return [nm] if nm else []
 
     # Parse both markets
     parsed = []
@@ -133,9 +290,15 @@ def _build_event_market(
         no_bid = _safe_float(m.get("no_bid_dollars"))
         if yes_ask <= 0 or yes_ask >= 1:
             continue
+        # Kalshi provides last_updated_ts (Unix seconds) per market;
+        # prefer it over our fetch timestamp for more accurate staleness.
+        api_ts = m.get("last_updated_ts")
+        market_fetched_at = float(api_ts) if api_ts else fetch_ts
+
         parsed.append({
             "ticker": m.get("ticker", ""),
             "title": m.get("title", ""),
+            "yes_sub_title": m.get("yes_sub_title", ""),
             "yes_ask": yes_ask,
             "no_ask": no_ask if no_ask > 0 else 1.0 - yes_ask,
             "yes_bid": yes_bid,
@@ -145,38 +308,66 @@ def _build_event_market(
             "close_time": m.get("close_time") or m.get("expiration_time"),
             "series": series,
             "slug": slug,
+            "fetched_at": market_fetched_at,
         })
 
     if len(parsed) < 2:
         if parsed:
             m, series, slug = market_group[0]
-            return _single_market_fallback(m, series, slug)
-        return None
+            nm = _single_market_fallback(m, series, slug, fetch_ts)
+            return [nm] if nm else []
+        return []
 
-    m1, m2 = parsed[0], parsed[1]
+    # --- 3-way detection: separate draw market from team markets ---
+    # Soccer events have 3 markets (home/away/draw). The draw market
+    # must be excluded from the 2-market pairing logic because buying
+    # "No Home" ≠ "Buy Away" when a draw is possible.
+    _DRAW_LABELS = {"tie", "draw"}
+    draw_market = None
+    team_markets = []
+    for p in parsed:
+        sub = p["yes_sub_title"].lower().strip()
+        suffix = p["ticker"].rsplit("-", 1)[-1].lower() if "-" in p["ticker"] else ""
+        if sub in _DRAW_LABELS or suffix == "tie":
+            draw_market = p
+        else:
+            team_markets.append(p)
 
-    # Best price to buy the player in M1 (yes on M1, or no on M2)
-    best_m1_player = min(m1["yes_ask"], m2["no_ask"])
-    # Best price to buy the player in M2 (yes on M2, or no on M1)
-    best_m2_player = min(m2["yes_ask"], m1["no_ask"])
+    if len(team_markets) < 2:
+        # Can't form a team pair — fall back
+        if parsed:
+            m, series, slug = market_group[0]
+            nm = _single_market_fallback(m, series, slug, fetch_ts)
+            return [nm] if nm else []
+        return []
+
+    # Sort by ticker so M1/M2 assignment is deterministic regardless of API order
+    team_markets.sort(key=lambda p: p["ticker"])
+    m1, m2 = team_markets[0], team_markets[1]
+
+    if draw_market:
+        # 3-way market: use direct yes_ask prices — cross-market best-price
+        # is invalid because "No Home" includes draw probability.
+        best_m1_player = m1["yes_ask"]
+        best_m2_player = m2["yes_ask"]
+    else:
+        # 2-way market: pick cheapest route across the pair
+        best_m1_player = min(m1["yes_ask"], m2["no_ask"])
+        best_m2_player = min(m2["yes_ask"], m1["no_ask"])
 
     # Validate prices
     if best_m1_player <= 0.02 or best_m1_player >= 0.98:
-        return None
+        return []
     if best_m2_player <= 0.02 or best_m2_player >= 0.98:
-        return None
+        return []
 
-    # Build question from M1's title (contains both players via match name)
-    # The event title from Kalshi is like "Rublev vs Bergs"
-    # M1's title is "Will Andrey Rublev win the Rublev vs Bergs : Round Of 32 match?"
-    question = m1["title"]
-
-    # outcome_prices: [price_for_yes_player, price_for_no_player]
-    # yes player = the player in M1's question (first name found)
-    outcome_prices = [
-        str(round(best_m1_player, 4)),
-        str(round(best_m2_player, 4)),
-    ]
+    # Determine team names for the YES hint.
+    m1_subject = m1["yes_sub_title"] or _identify_m1_team(m1["ticker"], m1["title"], m2["ticker"], m2["title"])
+    m2_subject = m2["yes_sub_title"] or _identify_m1_team(m2["ticker"], m2["title"], m1["ticker"], m1["title"])
+    if m1_subject and m2_subject:
+        question = f"Will {m1_subject} beat {m2_subject}?"
+    else:
+        question = m1["title"]
 
     # Use the ticker of the market with more volume for URL / history
     primary = m1 if m1["volume"] >= m2["volume"] else m2
@@ -184,31 +375,76 @@ def _build_event_market(
     slug_name = primary["slug"]
     url = f"https://kalshi.com/markets/{series.lower()}/{slug_name}/{event_ticker.lower()}"
 
-    total_liq = m1["liquidity"] + m2["liquidity"]
-    total_vol = m1["volume"] + m2["volume"]
+    all_event_markets = [m1, m2] + ([draw_market] if draw_market else [])
+    total_liq = sum(m["liquidity"] for m in all_event_markets)
+    total_vol = sum(m["volume"] for m in all_event_markets)
+    best_fetched = max(m["fetched_at"] for m in all_event_markets)
 
-    return NormalizedMarket(
+    if draw_market:
+        # 3-way market (soccer): emit one NormalizedMarket per team.
+        # Each uses the team's direct yes_ask price with (1 - yes_ask) as
+        # the complement.  This keeps YES + NO = 1.0 for price consistency
+        # and gives each team its own accurate Kalshi price for edge calc.
+        results: list[NormalizedMarket] = []
+        for team, price in [(m1, best_m1_player), (m2, best_m2_player)]:
+            subject = team["yes_sub_title"] or _identify_m1_team(
+                team["ticker"], team["title"], m2["ticker"] if team is m1 else m1["ticker"],
+                m2["title"] if team is m1 else m1["title"],
+            )
+            complement = round(1.0 - price, 4)
+            spread = round(team["yes_ask"] - team["yes_bid"], 4) if team["yes_bid"] > 0 else None
+            results.append(NormalizedMarket(
+                platform="kalshi",
+                market_id=team["ticker"],
+                event=question,
+                market_type="h2h",
+                side=subject,
+                line=None,
+                price=price,
+                liquidity=total_liq if total_liq > 0 else total_vol,
+                url=url,
+                timestamp=team["close_time"],
+                question=question,
+                end_date=_extract_match_date_from_ticker(event_ticker) or team["close_time"],
+                outcome_prices=[str(round(price, 4)), str(complement)],
+                event_slug=event_ticker,
+                bid_ask_spread=spread,
+                fetched_at=best_fetched,
+            ))
+        return results
+
+    # 2-way market: single NormalizedMarket with cross-market best prices
+    outcome_prices = [
+        str(round(best_m1_player, 4)),
+        str(round(best_m2_player, 4)),
+    ]
+    # Spread from M1's direct market (the side used for market_id / price history)
+    m1_spread = round(m1["yes_ask"] - m1["yes_bid"], 4) if m1["yes_bid"] > 0 else None
+    return [NormalizedMarket(
         platform="kalshi",
-        market_id=m1["ticker"],  # use M1 ticker for price history
+        market_id=m1["ticker"],
         event=question,
         market_type="h2h",
-        side="",
+        side=m1_subject,
         line=None,
         price=best_m1_player,
         liquidity=total_liq if total_liq > 0 else total_vol,
         url=url,
         timestamp=m1["close_time"],
         question=question,
-        end_date=m1["close_time"],
+        end_date=_extract_match_date_from_ticker(event_ticker) or m1["close_time"],
         outcome_prices=outcome_prices,
         event_slug=event_ticker,
-    )
+        bid_ask_spread=m1_spread,
+        fetched_at=best_fetched,
+    )]
 
 
 def _single_market_fallback(
     m: dict,
     series_ticker: str,
     series_slug: str,
+    fetch_ts: float = 0.0,
 ) -> NormalizedMarket | None:
     """Fallback for unpaired markets — use yes_ask directly."""
     yes_ask = _safe_float(m.get("yes_ask_dollars"))
@@ -217,21 +453,35 @@ def _single_market_fallback(
 
     ticker = m.get("ticker", "")
     event_ticker = m.get("event_ticker", "")
-    no_price = round(1.0 - yes_ask, 4)
+    title = m.get("title", "")
+    # Use actual no_ask if available; only synthesize as last resort
+    no_ask = _safe_float(m.get("no_ask_dollars"))
+    no_price = round(no_ask, 4) if no_ask > 0 else round(1.0 - yes_ask, 4)
+
+    # Extract subject (the YES player) — prefer yes_sub_title from API
+    subject = m.get("yes_sub_title", "") or _extract_title_subject(title)
+
+    api_ts = m.get("last_updated_ts")
+    market_fetched_at = float(api_ts) if api_ts else fetch_ts
+
+    yes_bid = _safe_float(m.get("yes_bid_dollars"))
+    spread = round(yes_ask - yes_bid, 4) if yes_bid > 0 else None
 
     return NormalizedMarket(
         platform="kalshi",
         market_id=ticker,
-        event=m.get("title", ""),
+        event=title,
         market_type="h2h",
-        side="",
+        side=subject,  # YES hint: outcome_prices[0] is this player's price
         line=None,
         price=round(yes_ask, 4),
         liquidity=_safe_float(m.get("liquidity_dollars")) or _safe_float(m.get("volume_fp")),
         url=f"https://kalshi.com/markets/{series_ticker.lower()}/{series_slug}/{event_ticker.lower()}",
         timestamp=m.get("close_time") or m.get("expiration_time"),
         question=m.get("title", ""),
-        end_date=m.get("close_time") or m.get("expiration_time"),
+        end_date=_extract_match_date_from_ticker(event_ticker) or m.get("close_time") or m.get("expiration_time"),
         outcome_prices=[str(round(yes_ask, 4)), str(no_price)],
         event_slug=event_ticker,
+        bid_ask_spread=spread,
+        fetched_at=market_fetched_at,
     )
