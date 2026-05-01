@@ -132,7 +132,11 @@ export interface SnapshotStatus {
   has_snapshot: boolean;
   updated_at: number | null;
   is_refreshing: boolean;
+  refresh_started_at?: number | null;
+  last_refresh_error?: string | null;
+  last_refresh_duration_seconds?: number | null;
   trigger: string | null;
+  last_trigger?: string | null;
   opportunity_count: number;
   status_counts: Record<string, number>;
   platforms_fetched: string[];

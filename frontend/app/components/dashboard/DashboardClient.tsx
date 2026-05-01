@@ -54,8 +54,14 @@ export function DashboardClient({ initialData }: Props) {
   const [scanning, setScanning] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [, setTick] = useState(0);
+  // New status fields surfaced by /opportunities/status
+  const [refreshStartedAt, setRefreshStartedAt] = useState<number | null>(null);
+  const [lastRefreshError, setLastRefreshError] = useState<string | null>(null);
+  const [lastRefreshDuration, setLastRefreshDuration] = useState<number | null>(null);
+  const [firstPollComplete, setFirstPollComplete] = useState(false);
   const lastSeenUpdatedAt = useRef<number | null>(init.updated_at ?? null);
   const pollIntervalRef = useRef(initialData ? 10_000 : 2_000); // fast poll if no initial data
+  const hasAutoFiredRef = useRef(false);  // cold-start auto-refresh once-only guard
 
   const { positions, isTaken, takePosition, closePosition, removePosition } =
     useTrackedPositions();
@@ -77,16 +83,26 @@ export function DashboardClient({ initialData }: Props) {
   }, []);
 
   // --- Snapshot polling: check /status, fetch /snapshot when updated_at changes ---
-  // Polls at 2s while scanning (fast feedback), 10s otherwise (low overhead).
+  // Cadence is driven by backend state: 2s while refreshing or no snapshot, 10s otherwise.
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
 
     const poll = async () => {
+      let nextInterval = pollIntervalRef.current;
       try {
         const status = await fetchSnapshotStatus();
         if (!active) return;
+
+        // Surface the full backend status to the UI
         setBackendRefreshing(status.is_refreshing);
+        setRefreshStartedAt(status.refresh_started_at ?? null);
+        setLastRefreshError(status.last_refresh_error ?? null);
+        setLastRefreshDuration(status.last_refresh_duration_seconds ?? null);
+        setFirstPollComplete(true);
+
+        // Adapt polling rate from backend truth
+        nextInterval = (status.is_refreshing || !status.has_snapshot) ? 2_000 : 10_000;
 
         if (
           status.has_snapshot &&
@@ -105,42 +121,50 @@ export function DashboardClient({ initialData }: Props) {
             }
             return snap;
           });
-
-          // Scan delivered results — stop fast polling
-          if (scanning) {
-            setScanning(false);
-            pollIntervalRef.current = 10_000;
-          }
         }
 
-        // If backend finished refreshing and we were scanning, stop
-        if (scanning && !status.is_refreshing && status.has_snapshot) {
-          // The snapshot may already have been picked up above.
-          // If not (same updated_at), the scan produced no change — still stop.
+        // Backend confirms not refreshing → clear the optimistic local flag
+        if (scanning && !status.is_refreshing) {
           setScanning(false);
-          pollIntervalRef.current = 10_000;
         }
       } catch {
         // Polling failure is silent — next tick will retry
       }
-      if (active) timer = setTimeout(poll, pollIntervalRef.current);
+      pollIntervalRef.current = nextInterval;
+      if (active) timer = setTimeout(poll, nextInterval);
     };
 
     timer = setTimeout(poll, pollIntervalRef.current);
     return () => { active = false; clearTimeout(timer); };
   }, [selected, scanning]);
 
-  // --- Run Scan: fire POST /refresh, switch to fast polling, let polling deliver results ---
+  // --- Run Scan: fire POST /refresh; backend returns 202 immediately, polling delivers results ---
   const runScan = useCallback(() => {
-    if (scanning) return;
+    if (scanning || backendRefreshing) return;
     setScanning(true);
-    pollIntervalRef.current = 2_000; // fast polling while scan runs
+    pollIntervalRef.current = 2_000;
     refreshOpportunities().catch(() => {
-      // If the POST itself fails, stop scanning state
+      // POST itself failed (e.g. backend unreachable). Drop optimistic flag —
+      // polling will retry. last_refresh_error stays driven by backend status.
       setScanning(false);
-      pollIntervalRef.current = 10_000;
     });
-  }, [scanning]);
+  }, [scanning, backendRefreshing]);
+
+  // --- Cold-start auto-refresh: fire exactly once when the first /status
+  //     response shows no snapshot and no refresh in flight ---
+  const runScanRef = useRef<() => void>(() => {});
+  runScanRef.current = runScan;
+  useEffect(() => {
+    if (
+      firstPollComplete &&
+      !hasAutoFiredRef.current &&
+      !updatedAt &&
+      !backendRefreshing
+    ) {
+      hasAutoFiredRef.current = true;
+      runScanRef.current();
+    }
+  }, [firstPollComplete, updatedAt, backendRefreshing]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -334,7 +358,13 @@ export function DashboardClient({ initialData }: Props) {
               }}
             />
             <span suppressHydrationWarning>
-              {scanning ? "Updating..." : backendRefreshing ? "Updating..." : !mounted ? "" : updatedAt ? `${timeAgo(new Date(updatedAt * 1000))}` : "Waiting for data..."}
+              {(scanning || backendRefreshing)
+                ? "Refreshing live prices…"
+                : !mounted
+                  ? ""
+                  : updatedAt
+                    ? `Last updated ${timeAgo(new Date(updatedAt * 1000))}${lastRefreshDuration != null ? ` · last scan ${lastRefreshDuration.toFixed(0)}s` : ""}`
+                    : "Waiting for data..."}
             </span>
           </div>
         </div>
@@ -449,8 +479,37 @@ export function DashboardClient({ initialData }: Props) {
         )}
       </div>
 
+      {/* Error banner — keep table visible above/below if a snapshot exists */}
+      {lastRefreshError && (
+        <div
+          className="flex items-center justify-between gap-3 px-4 py-2 rounded-lg border"
+          style={{ background: "rgba(248,113,113,0.05)", borderColor: "rgba(248,113,113,0.3)" }}
+        >
+          <div className="flex items-center gap-2 font-mono text-[10px]" style={{ color: "#f87171" }}>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#f87171" }} />
+            <span>
+              Last refresh failed: {lastRefreshError}
+              {hasSnapshot ? " · Showing previous snapshot." : ""}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={runScan}
+            disabled={scanning || backendRefreshing}
+            className="font-mono text-[9px] tracking-wider uppercase px-2.5 py-1 rounded border"
+            style={{
+              color: (scanning || backendRefreshing) ? "#374151" : "#f87171",
+              borderColor: "rgba(248,113,113,0.3)",
+              background: "rgba(248,113,113,0.06)",
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {!hasSnapshot ? (
-        /* No snapshot yet — cold start or backend initializing */
+        /* No snapshot yet — cold start, first scan in flight, or empty idle */
         <div
           className="rounded-lg border px-6 py-16 text-center"
           style={{ background: "#0c1315", borderColor: "rgba(19,78,74,0.35)" }}
@@ -461,15 +520,25 @@ export function DashboardClient({ initialData }: Props) {
               style={{ background: "#f59e0b", boxShadow: "0 0 6px #f59e0b" }}
             />
             <span className="font-mono text-[12px]" style={{ color: "#f59e0b" }}>
-              Waiting for data...
+              {(scanning || backendRefreshing) ? "First scan running" : "Waiting for data..."}
             </span>
           </div>
-          <p className="font-mono text-[10px]" style={{ color: "#374151" }}>
-            The backend is building the first snapshot. This takes 10–30 seconds on cold start.
-          </p>
-          <p className="font-mono text-[10px] mt-1" style={{ color: "#374151" }}>
-            Or click <strong style={{ color: "#2dd4bf" }}>Scan</strong> above to trigger a manual refresh.
-          </p>
+          {(scanning || backendRefreshing) ? (
+            <>
+              <p className="font-mono text-[10px]" style={{ color: "#374151" }}>
+                First scan running — this can take about a minute.
+              </p>
+              {refreshStartedAt != null && mounted && (
+                <p className="font-mono text-[9px] mt-1" style={{ color: "#4b5563" }} suppressHydrationWarning>
+                  Elapsed: {Math.max(0, Math.floor(Date.now() / 1000 - refreshStartedAt))}s
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="font-mono text-[10px]" style={{ color: "#374151" }}>
+              Click <strong style={{ color: "#2dd4bf" }}>Scan</strong> above to trigger the first refresh.
+            </p>
+          )}
         </div>
       ) : (
         <>
