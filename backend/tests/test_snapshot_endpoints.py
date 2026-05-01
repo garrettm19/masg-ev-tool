@@ -4,17 +4,29 @@ Tests for snapshot API endpoints.
 Covers:
   - GET  /snapshot  — pure read, 204 when empty, filters
   - GET  /status    — lightweight metadata read
-  - POST /refresh   — triggers pipeline, updates snapshot, returns status
+  - POST /refresh   — schedules a background refresh, returns 202 immediately
 """
+import time
 import pytest
 from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 
 from main import app
-from services.snapshot import store_snapshot, clear_snapshot, get_snapshot
+from services.snapshot import store_snapshot, clear_snapshot, get_snapshot, is_refreshing
+from services import snapshot as _snap_mod
 from services.opportunities import EvaluatedOpportunity
 
 client = TestClient(app)
+
+
+def _wait_until_idle(timeout: float = 5.0) -> bool:
+    """Poll until no background refresh is in flight, or timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not is_refreshing():
+            return True
+        time.sleep(0.02)
+    return False
 
 
 def _make_opp(
@@ -68,6 +80,7 @@ def _make_opp(
 def _clean():
     clear_snapshot()
     yield
+    _wait_until_idle(timeout=3.0)
     clear_snapshot()
 
 
@@ -183,88 +196,99 @@ class TestStatusEndpoint:
 # ---------------------------------------------------------------------------
 
 class TestRefreshEndpoint:
-    def test_refresh_updates_snapshot_and_returns_status(self):
-        """POST /refresh runs the pipeline, stores the result, returns status."""
+    def test_refresh_updates_snapshot_and_returns_202(self):
+        """POST /refresh schedules background pipeline; eventually stores snapshot."""
         fake_opps = [_make_opp(edge=0.10), _make_opp(market_id="m2", edge=0.06)]
         fake_meta = {
             "status_counts": {"BUY": 2, "WATCH": 0, "SKIP": 5},
             "platforms_fetched": ["polymarket", "kalshi"],
         }
 
-        from services.snapshot import OpportunitySnapshot
-        import time
-
         async def _mock_refresh(trigger="manual", **kwargs):
             return store_snapshot(fake_opps, fake_meta, trigger=trigger)
 
-        with patch("routers.opportunities.refresh_snapshot", side_effect=_mock_refresh):
+        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_refresh):
             resp = client.post("/api/opportunities/refresh")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["has_snapshot"] is True
-        assert body["updated_at"] > 0
-        assert body["trigger"] == "manual"
-        assert body["opportunity_count"] == 2
-        assert body["status_counts"]["BUY"] == 2
+            assert resp.status_code == 202
+            # Wait for the background task to finish
+            assert _wait_until_idle(timeout=3.0)
 
         # Snapshot should now be readable via GET /snapshot
         snap_resp = client.get("/api/opportunities/snapshot")
         assert snap_resp.status_code == 200
-        assert snap_resp.json()["total"] == 2
+        snap_body = snap_resp.json()
+        assert snap_body["total"] == 2
+        assert snap_body["status_counts"]["BUY"] == 2
 
-    def test_refresh_returns_503_on_missing_api_key(self):
-        """Pipeline raises ValueError when ODDS_API_KEY is missing."""
+        # /status reflects the completed manual refresh
+        st_resp = client.get("/api/opportunities/status")
+        st_body = st_resp.json()
+        assert st_body["has_snapshot"] is True
+        assert st_body["trigger"] == "manual"
+        assert st_body["last_trigger"] == "manual"
+        assert st_body["last_refresh_error"] is None
+        assert st_body["last_refresh_duration_seconds"] is not None
+
+    def test_refresh_value_error_captured_not_raised(self):
+        """ValueError in the pipeline lands in last_refresh_error; endpoint still returns 202."""
         async def _mock_raise(trigger="manual", **kwargs):
             raise ValueError("ODDS_API_KEY environment variable is not set")
 
-        with patch("routers.opportunities.refresh_snapshot", side_effect=_mock_raise):
+        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_raise):
             resp = client.post("/api/opportunities/refresh")
+            assert resp.status_code == 202
+            assert _wait_until_idle(timeout=3.0)
 
-        assert resp.status_code == 503
-        assert "ODDS_API_KEY" in resp.json()["detail"]
+        st = client.get("/api/opportunities/status").json()
+        assert st["is_refreshing"] is False
+        assert st["last_refresh_error"] is not None
+        assert "ODDS_API_KEY" in st["last_refresh_error"]
 
-    def test_refresh_returns_502_on_unexpected_error(self):
+    def test_refresh_unexpected_error_captured_not_raised(self):
         async def _mock_raise(trigger="manual", **kwargs):
             raise RuntimeError("something broke")
 
-        with patch("routers.opportunities.refresh_snapshot", side_effect=_mock_raise):
+        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_raise):
             resp = client.post("/api/opportunities/refresh")
+            assert resp.status_code == 202
+            assert _wait_until_idle(timeout=3.0)
 
-        assert resp.status_code == 502
+        st = client.get("/api/opportunities/status").json()
+        assert st["is_refreshing"] is False
+        assert st["last_refresh_error"] is not None
+        assert "something broke" in st["last_refresh_error"]
 
     def test_polling_flow_status_then_snapshot(self):
         """
         Simulates the frontend polling flow:
         1. GET /status → has_snapshot=false
-        2. POST /refresh → snapshot created
-        3. GET /status → has_snapshot=true, updated_at set
+        2. POST /refresh → 202, refresh runs in background
+        3. wait for completion → GET /status → has_snapshot=true
         4. GET /snapshot → returns data matching that updated_at
         """
-        # 1. No snapshot yet
         resp = client.get("/api/opportunities/status")
         assert resp.json()["has_snapshot"] is False
 
-        # 2. Refresh
         fake_opps = [_make_opp(edge=0.09)]
         fake_meta = {"status_counts": {"BUY": 1}, "platforms_fetched": ["polymarket"]}
 
         async def _mock_refresh(trigger="manual", **kwargs):
             return store_snapshot(fake_opps, fake_meta, trigger=trigger)
 
-        with patch("routers.opportunities.refresh_snapshot", side_effect=_mock_refresh):
+        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_refresh):
             resp = client.post("/api/opportunities/refresh")
-        assert resp.status_code == 200
-        refresh_ts = resp.json()["updated_at"]
+            assert resp.status_code == 202
+            assert _wait_until_idle(timeout=3.0)
 
-        # 3. Status reflects the new snapshot
+        # Status reflects the new snapshot
         resp = client.get("/api/opportunities/status")
         body = resp.json()
         assert body["has_snapshot"] is True
-        assert body["updated_at"] == refresh_ts
         assert body["opportunity_count"] == 1
+        refresh_ts = body["updated_at"]
+        assert refresh_ts is not None
 
-        # 4. Snapshot returns the same data
+        # Snapshot returns the same data
         resp = client.get("/api/opportunities/snapshot")
         assert resp.status_code == 200
         snap = resp.json()
@@ -274,16 +298,15 @@ class TestRefreshEndpoint:
 
     def test_refresh_does_not_affect_monitor(self):
         """POST /refresh should not start/stop/modify the scheduler."""
-        from routers.monitor import _scheduler
-
         fake_opps = [_make_opp()]
+
         async def _mock_refresh(trigger="manual", **kwargs):
             return store_snapshot(fake_opps, {"status_counts": {"BUY": 1}}, trigger=trigger)
 
-        with patch("routers.opportunities.refresh_snapshot", side_effect=_mock_refresh):
+        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_refresh):
             resp = client.post("/api/opportunities/refresh")
+            assert resp.status_code == 202
+            assert _wait_until_idle(timeout=3.0)
 
-        assert resp.status_code == 200
-        # _scheduler should still be None (never initialized by /refresh)
         from routers import monitor
         assert monitor._scheduler is None

@@ -17,7 +17,13 @@ from services.opportunities import (
 from services.price_history import fetch_price_history
 from services.odds_provider import fetch_historical_odds
 from services.rule_engine import POLICY_TABLE
-from services.snapshot import get_snapshot, refresh_snapshot, is_refreshing
+from services.snapshot import (
+    get_snapshot,
+    refresh_snapshot,
+    is_refreshing,
+    start_background_refresh,
+    get_refresh_state,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -309,10 +315,47 @@ class SnapshotStatusResponse(BaseModel):
     has_snapshot: bool
     updated_at: float | None
     is_refreshing: bool
-    trigger: str | None
+    refresh_started_at: float | None
+    last_refresh_error: str | None
+    last_refresh_duration_seconds: float | None
+    trigger: str | None                # most recent successful snapshot trigger
+    last_trigger: str | None           # most recent attempted trigger (success or failure)
     opportunity_count: int
     status_counts: dict[str, int]
     platforms_fetched: list[str]
+
+
+def _build_status_response() -> SnapshotStatusResponse:
+    """Compose the lightweight status payload from current module state."""
+    snapshot = get_snapshot()
+    rstate = get_refresh_state()
+    if snapshot is None:
+        return SnapshotStatusResponse(
+            has_snapshot=False,
+            updated_at=None,
+            is_refreshing=rstate["is_refreshing"],
+            refresh_started_at=rstate["refresh_started_at"],
+            last_refresh_error=rstate["last_refresh_error"],
+            last_refresh_duration_seconds=rstate["last_refresh_duration_seconds"],
+            trigger=None,
+            last_trigger=rstate["last_trigger"],
+            opportunity_count=0,
+            status_counts={},
+            platforms_fetched=[],
+        )
+    return SnapshotStatusResponse(
+        has_snapshot=True,
+        updated_at=snapshot.updated_at,
+        is_refreshing=rstate["is_refreshing"],
+        refresh_started_at=rstate["refresh_started_at"],
+        last_refresh_error=rstate["last_refresh_error"],
+        last_refresh_duration_seconds=rstate["last_refresh_duration_seconds"],
+        trigger=snapshot.trigger,
+        last_trigger=rstate["last_trigger"],
+        opportunity_count=len(snapshot.opportunities),
+        status_counts=snapshot.meta.get("status_counts", {}),
+        platforms_fetched=snapshot.meta.get("platforms_fetched", []),
+    )
 
 
 @router.get("/opportunities/status", response_model=SnapshotStatusResponse)
@@ -323,67 +366,44 @@ async def get_snapshot_status() -> SnapshotStatusResponse:
     Never triggers pipeline recomputation. Designed for frontend polling
     to check whether data is fresh or a refresh is in progress.
     """
-    snapshot = get_snapshot()
-    if snapshot is None:
-        return SnapshotStatusResponse(
-            has_snapshot=False,
-            updated_at=None,
-            is_refreshing=is_refreshing(),
-            trigger=None,
-            opportunity_count=0,
-            status_counts={},
-            platforms_fetched=[],
-        )
-    return SnapshotStatusResponse(
-        has_snapshot=True,
-        updated_at=snapshot.updated_at,
-        is_refreshing=is_refreshing(),
-        trigger=snapshot.trigger,
-        opportunity_count=len(snapshot.opportunities),
-        status_counts=snapshot.meta.get("status_counts", {}),
-        platforms_fetched=snapshot.meta.get("platforms_fetched", []),
-    )
+    return _build_status_response()
 
 
 class RefreshRequest(BaseModel):
     scope: str = "stale"   # "all" | "stale" | sport config key (e.g. "tennis")
 
 
-@router.post("/opportunities/refresh", response_model=SnapshotStatusResponse)
-async def refresh_opportunities(req: RefreshRequest | None = None) -> SnapshotStatusResponse:
+@router.post(
+    "/opportunities/refresh",
+    response_model=SnapshotStatusResponse,
+    status_code=202,
+)
+async def refresh_opportunities(
+    req: RefreshRequest | None = None,
+) -> SnapshotStatusResponse:
     """
-    Trigger a fresh pipeline run and update the cached snapshot.
+    Spawn a background pipeline refresh and return current status immediately.
 
     Body (optional):
       {"scope": "stale"}   — only re-fetch sports with expired TTL (default, cheapest)
       {"scope": "all"}     — invalidate all cached odds, fetch everything fresh
       {"scope": "tennis"}  — invalidate one sport, fetch it fresh
 
-    Returns lightweight status (not the full opportunity list).
-    The frontend should call GET /snapshot after this completes
-    to read the updated data.
+    Always returns 202 with the current SnapshotStatusResponse. If a refresh
+    is already running, this call is a no-op (no duplicate refresh is
+    spawned) and the response reflects the in-flight refresh.
+
+    The frontend should poll GET /opportunities/status until updated_at
+    changes, then GET /opportunities/snapshot to read the new data.
 
     Does not affect the monitor scheduler — the scheduler continues
     on its own cadence independently.
     """
     scope = req.scope if req else "stale"
-    try:
-        snap = await refresh_snapshot(trigger="manual", scope=scope)
-    except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    except Exception as exc:
-        logger.error("Manual refresh failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Pipeline failed")
-
-    return SnapshotStatusResponse(
-        has_snapshot=True,
-        updated_at=snap.updated_at,
-        is_refreshing=False,
-        trigger=snap.trigger,
-        opportunity_count=len(snap.opportunities),
-        status_counts=snap.meta.get("status_counts", {}),
-        platforms_fetched=snap.meta.get("platforms_fetched", []),
-    )
+    await start_background_refresh(trigger="manual", scope=scope)
+    # Always 202: whether we spawned a new refresh or one was already running,
+    # the request was accepted; clients poll /status for completion.
+    return _build_status_response()
 
 
 @router.get("/opportunities/policy", response_model=list[PolicyRuleOut])
