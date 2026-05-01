@@ -5,11 +5,17 @@ Gamma's outcomePrices is last-trade metadata and not safe for live EV
 calculations.  This module fetches the actual order book from
 clob.polymarket.com for a given asset (token) ID, so the scanner can
 price opportunities against a real best ask instead of stale metadata.
+
+`fetch_books` is bounded both by an `asyncio.Semaphore` and by the underlying
+`httpx` connection pool so that scans involving thousands of token IDs do
+not overwhelm the CLOB edge — unbounded fan-out was observed to cause silent
+request failures under uvicorn.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -17,6 +23,10 @@ import httpx
 logger = logging.getLogger(__name__)
 
 CLOB_BASE = "https://clob.polymarket.com"
+
+# Cap concurrent in-flight CLOB requests.  Matches httpx pool max_connections
+# below so the semaphore and pool agree.
+DEFAULT_CONCURRENCY = 50
 
 
 @dataclass(frozen=True)
@@ -95,29 +105,58 @@ async def fetch_book(
 
 async def fetch_books(
     token_ids: list[str],
-    timeout: float = 3.0,
+    timeout: float = 8.0,
+    concurrency: int = DEFAULT_CONCURRENCY,
 ) -> dict[str, OrderBook]:
     """
-    Fetch CLOB order books for many tokens concurrently.
+    Fetch CLOB order books for many tokens with bounded concurrency.
 
     Per-token failures do not fail the batch; failed tokens are omitted
     from the returned dict.  Duplicate token_ids are fetched only once.
     Empty / falsy token_ids are ignored.
+
+    `concurrency` caps the number of simultaneously in-flight HTTP requests
+    via an `asyncio.Semaphore`, complementing the httpx connection-pool limit.
+    Both are needed because unbounded fan-out (~2k+ requests in one gather)
+    was observed to silently produce zero results under uvicorn.
     """
+    requested = len(token_ids)
     unique_ids = list(dict.fromkeys(t for t in token_ids if t))
     if not unique_ids:
+        logger.debug(
+            "CLOB fetch_books: requested=%d unique=0 ok=0 fail=0 elapsed=0.00s",
+            requested,
+        )
         return {}
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    sem = asyncio.Semaphore(concurrency)
+    limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
+    t0 = time.monotonic()
+
+    async def _bounded(client: httpx.AsyncClient, tid: str) -> OrderBook | None:
+        async with sem:
+            return await fetch_book(client, tid)
+
+    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         results = await asyncio.gather(
-            *(fetch_book(client, tid) for tid in unique_ids),
+            *(_bounded(client, tid) for tid in unique_ids),
             return_exceptions=True,
         )
 
     books: dict[str, OrderBook] = {}
+    failures = 0
     for tid, result in zip(unique_ids, results):
         if isinstance(result, OrderBook):
             books[tid] = result
-        elif isinstance(result, BaseException):
-            logger.debug("CLOB fetch_book exception for %s: %s", tid, result)
+        else:
+            failures += 1
+            if isinstance(result, BaseException):
+                # Log only a short prefix of the token to avoid leaking full IDs.
+                logger.debug("CLOB fetch_book exception for %s…: %s", tid[:16], result)
+
+    elapsed = time.monotonic() - t0
+    logger.debug(
+        "CLOB fetch_books: requested=%d unique=%d ok=%d fail=%d elapsed=%.2fs",
+        requested, len(unique_ids), len(books), failures, elapsed,
+    )
     return books

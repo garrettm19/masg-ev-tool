@@ -5,6 +5,7 @@ No live network calls — uses httpx.MockTransport for fetch_book and patches
 fetch_book itself for fetch_books orchestration.
 """
 import asyncio
+import inspect
 
 import httpx
 from unittest.mock import AsyncMock, patch
@@ -15,6 +16,7 @@ from services.clob_polymarket import (
     _build_book,
     fetch_book,
     fetch_books,
+    DEFAULT_CONCURRENCY,
 )
 
 
@@ -266,3 +268,60 @@ class TestFetchBooks:
         result = asyncio.run(fetch_books(["", "a", ""]))
         assert mock_fb.call_count == 1
         assert set(result.keys()) == {"a"}
+
+
+# ---------------------------------------------------------------------------
+# Bounded concurrency and timeout defaults
+# ---------------------------------------------------------------------------
+
+class TestFetchBooksConcurrency:
+    def test_default_concurrency_is_50(self):
+        assert DEFAULT_CONCURRENCY == 50
+        sig = inspect.signature(fetch_books)
+        assert sig.parameters["concurrency"].default == 50
+
+    def test_default_timeout_is_8_seconds(self):
+        sig = inspect.signature(fetch_books)
+        assert sig.parameters["timeout"].default == 8.0
+
+    def test_peak_in_flight_does_not_exceed_default_concurrency(self):
+        """200 tokens, default concurrency 50 → peak in-flight must stay ≤ 50."""
+        state = {"in_flight": 0, "peak": 0}
+
+        async def slow_fetch(client, tid):
+            state["in_flight"] += 1
+            state["peak"] = max(state["peak"], state["in_flight"])
+            # Yield long enough that all gather tasks queue up before the
+            # first completes; without this they'd run sequentially.
+            await asyncio.sleep(0.005)
+            state["in_flight"] -= 1
+            return OrderBook(token_id=tid, bids=[], asks=[])
+
+        with patch("services.clob_polymarket.fetch_book", new_callable=AsyncMock) as mock_fb:
+            mock_fb.side_effect = slow_fetch
+            tokens = [f"tok_{i}" for i in range(200)]
+            result = asyncio.run(fetch_books(tokens))
+
+        assert len(result) == 200
+        assert state["peak"] <= DEFAULT_CONCURRENCY
+        # Sanity: with 200 tokens and a 5ms async sleep, we should have hit
+        # real concurrency, not serialized execution.
+        assert state["peak"] >= 10
+
+    def test_peak_in_flight_does_not_exceed_custom_concurrency(self):
+        state = {"in_flight": 0, "peak": 0}
+
+        async def slow_fetch(client, tid):
+            state["in_flight"] += 1
+            state["peak"] = max(state["peak"], state["in_flight"])
+            await asyncio.sleep(0.005)
+            state["in_flight"] -= 1
+            return OrderBook(token_id=tid, bids=[], asks=[])
+
+        with patch("services.clob_polymarket.fetch_book", new_callable=AsyncMock) as mock_fb:
+            mock_fb.side_effect = slow_fetch
+            tokens = [f"tok_{i}" for i in range(100)]
+            asyncio.run(fetch_books(tokens, concurrency=10))
+
+        assert state["peak"] <= 10
+        assert state["peak"] >= 5  # confirm we actually ran in parallel
