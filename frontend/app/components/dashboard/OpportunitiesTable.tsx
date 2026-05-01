@@ -41,9 +41,9 @@ function fmtTime(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso.slice(0, 10);
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${months[d.getUTCMonth()]} ${d.getUTCDate()}, ${hh}:${mm}`;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${months[d.getMonth()]} ${d.getDate()}, ${hh}:${mm}`;
 }
 
 function platformLabel(p: string): string {
@@ -137,7 +137,7 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
                   { label: "Type",      align: "left"   },
                   { label: "Detail",    align: "left"   },
                   { label: "Side",      align: "left"   },
-                  { label: "Start",     align: "left"   },
+                  { label: "Start (local)", align: "left"   },
                   { label: "Price",     align: "right"  },
                   { label: "Age",       align: "center" },
                   { label: "FD Odds",   align: "right"  },
