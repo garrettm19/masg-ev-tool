@@ -267,22 +267,23 @@ def _price_probability_coherent(f: MarketFeatures, c: EngineConfig) -> bool:
 
 def _date_not_stale(f: MarketFeatures, c: EngineConfig) -> bool:
     """
-    Pass if the date delta between PM market and FD event is within bounds.
+    Pass if the date delta between platform market and FD event is within
+    the per-sport max_date_delta_hours.
 
-    When a PM market for a future game (no FD odds yet) matches the nearest
-    existing FD event days away, the edge is meaningless — different game.
-    Skip when delta exceeds the sport-specific max_date_delta_hours AND
-    there's no competing match (which would indicate a real series).
+    Liquid team sports (MLB, NBA, NHL, NFL, soccer, ...) override the lenient
+    global default down to 12h via SportConfig.  This prevents wrong-game
+    matches in multi-game series where the same teams play across days.
 
-    Liquid team sports (MLB, NBA, NHL, NFL, soccer leagues, ...) override
-    the lenient global default down to 12h via SportConfig — preventing the
-    series-game mismatch where a future PM market gets paired with the only
-    available next-imminent FD event in a multi-game series.
+    Note: a previous version of this rule exempted ``competing_matches > 1``
+    on the assumption "series dedup picks the closest event."  That holds
+    only when ``end_date`` carries the actual game start time.  When the
+    adapter falls back to a date-only end_date, ALL same-team series games
+    score similarly and dedup may pick a wrong game; the exemption then
+    masked it.  The cap is now always enforced — adapters must produce an
+    accurate game start time (or accept SKIPs for ambiguous series).
     """
     if f.date_delta_hours is None:
         return True  # no date info — can't check
-    if f.competing_matches > 1:
-        return True  # series — date proximity already handled by series dedup
 
     from services.sports_config import config_for_odds_key
     sc = config_for_odds_key(f.sport)

@@ -104,9 +104,15 @@ class TestDateNotStale:
         assert status == "SKIP"
         assert "DATE_TOO_FAR" in f.reject_reasons
 
-    def test_pass_series_with_competing(self):
-        """MLB series: 2 FD events match, delta=28h, but competing_matches=2 → passes."""
-        f = _buy_ready(date_delta_hours=28.0, competing_matches=2)
+    def test_competing_alone_does_not_exempt_date_check(self):
+        """Tennis (72h cap): delta=28h with competing=2 still passes on its own
+        merits. Removing the old `competing_matches > 1` exemption must not break
+        legitimate matches that pass the per-sport cap."""
+        f = _buy_ready(
+            date_delta_hours=28.0,
+            competing_matches=2,
+            sport="tennis_atp_french_open",
+        )
         status, _ = evaluate_rules(f, _cfg())
         assert "DATE_TOO_FAR" not in f.reject_reasons
 
@@ -268,15 +274,31 @@ class TestDateNotStaleSportSpecific:
         status, _ = evaluate_rules(f, _cfg())
         assert "DATE_TOO_FAR" not in f.reject_reasons
 
-    def test_mlb_series_with_multiple_fd_events_still_passes(self):
+    def test_mlb_series_with_competing_still_skips_when_delta_exceeds_cap(self):
         """
-        Multi-FD-event series exemption survives the tightening: when both
-        series games have FD odds (competing=2), date proximity is handled
-        by series dedup rather than the date_not_stale rule.
+        The previous `competing_matches > 1` exemption is removed: it relied on
+        an accurate end_date (so dedup could pick the correct event), but with
+        date-only fallbacks ALL same-team games scored similarly and a wrong
+        game could slip through. The per-sport cap now always enforces.
+
+        Cardinals/Dodgers wrong-game scenario: Kalshi May 3 game matched to
+        FD May 1 event (delta=48h) with competing_matches>1 from same-team
+        FD events in cache → must SKIP, not exempt.
         """
         f = _buy_ready(
             date_delta_hours=48.0,
             competing_matches=2,
+            sport="baseball_mlb",
+        )
+        status, _ = evaluate_rules(f, _cfg())
+        assert status == "SKIP"
+        assert "DATE_TOO_FAR" in f.reject_reasons
+
+    def test_mlb_series_competing_within_cap_still_passes(self):
+        """When delta is within the per-sport cap, competing>1 also passes."""
+        f = _buy_ready(
+            date_delta_hours=3.0,
+            competing_matches=3,
             sport="baseball_mlb",
         )
         status, _ = evaluate_rules(f, _cfg())
