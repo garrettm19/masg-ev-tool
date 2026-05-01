@@ -11,6 +11,7 @@ interface Props {
   bankroll?: number;
   isTaken?: (opp: Opportunity) => boolean;
   sportsRegistry?: Record<string, SportRegistryEntry>;
+  isRefreshing?: boolean;
 }
 
 function fmtPct(n: number, dec = 1): string {
@@ -80,7 +81,7 @@ const MARKET_TYPE_LABEL: Record<string, string> = {
   h2h: "H2H", handicap: "HCAP", totals: "TOT", first_set: "1ST", unknown: "?",
 };
 
-export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankroll = 1000, isTaken, sportsRegistry }: Props) {
+export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankroll = 1000, isTaken, sportsRegistry, isRefreshing = false }: Props) {
   const rows = opportunities.slice(0, 30);
 
   // Stable across SSR/client: starts at 0 (renders "?"), hydrates on mount.
@@ -272,8 +273,12 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
                     </td>
 
                     {/* Age */}
-                    <td className="px-3 py-3 text-center font-mono text-[9px]" style={{ color: ageColor(opp.price_fetched_at, nowSec) }}>
-                      {fmtAge(opp.price_fetched_at, nowSec)}
+                    <td
+                      className="px-3 py-3 text-center font-mono text-[9px]"
+                      style={{ color: isRefreshing ? "#4b5563" : ageColor(opp.price_fetched_at, nowSec) }}
+                      title={isRefreshing ? "Price age hidden while scan is running" : undefined}
+                    >
+                      {isRefreshing ? "…" : fmtAge(opp.price_fetched_at, nowSec)}
                     </td>
 
                     {/* FD Odds */}

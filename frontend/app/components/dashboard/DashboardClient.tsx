@@ -493,6 +493,7 @@ export function DashboardClient({ initialData }: Props) {
                 bankroll={bankroll}
                 isTaken={isTaken}
                 sportsRegistry={sportsRegistry}
+                isRefreshing={scanning || backendRefreshing}
               />
             </div>
             <div className="space-y-3">
