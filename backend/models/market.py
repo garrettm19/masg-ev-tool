@@ -8,8 +8,9 @@ class Market(BaseModel):
     question: str
     outcomes: Optional[list[str]] = None
     outcomePrices: Optional[list[str]] = None  # string floats e.g. "0.73"
+    clobTokenIds: Optional[list[str]] = None   # CLOB asset IDs, index-aligned with outcomes
 
-    @field_validator("outcomes", "outcomePrices", mode="before")
+    @field_validator("outcomes", "outcomePrices", "clobTokenIds", mode="before")
     @classmethod
     def parse_json_string(cls, v: object) -> object:
         if isinstance(v, str):
@@ -24,6 +25,7 @@ class Market(BaseModel):
     endDate: Optional[str] = None
     active: Optional[bool] = None
     closed: Optional[bool] = None
+    acceptingOrders: Optional[bool] = None  # Gamma flag — false = market paused
     featured: Optional[bool] = None
     imageOptimized: Optional[str] = None
     slug: Optional[str] = None
