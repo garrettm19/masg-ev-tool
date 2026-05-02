@@ -204,10 +204,10 @@ class TestRefreshEndpoint:
             "platforms_fetched": ["polymarket", "kalshi"],
         }
 
-        async def _mock_refresh(trigger="manual", **kwargs):
-            return store_snapshot(fake_opps, fake_meta, trigger=trigger)
+        async def _mock_fetch(cfg=None):
+            return fake_opps, fake_meta
 
-        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_refresh):
+        with patch("services.opportunities.fetch_opportunities", side_effect=_mock_fetch):
             resp = client.post("/api/opportunities/refresh")
             assert resp.status_code == 202
             # Wait for the background task to finish
@@ -231,10 +231,10 @@ class TestRefreshEndpoint:
 
     def test_refresh_value_error_captured_not_raised(self):
         """ValueError in the pipeline lands in last_refresh_error; endpoint still returns 202."""
-        async def _mock_raise(trigger="manual", **kwargs):
+        async def _mock_fetch(cfg=None):
             raise ValueError("ODDS_API_KEY environment variable is not set")
 
-        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_raise):
+        with patch("services.opportunities.fetch_opportunities", side_effect=_mock_fetch):
             resp = client.post("/api/opportunities/refresh")
             assert resp.status_code == 202
             assert _wait_until_idle(timeout=3.0)
@@ -245,10 +245,10 @@ class TestRefreshEndpoint:
         assert "ODDS_API_KEY" in st["last_refresh_error"]
 
     def test_refresh_unexpected_error_captured_not_raised(self):
-        async def _mock_raise(trigger="manual", **kwargs):
+        async def _mock_fetch(cfg=None):
             raise RuntimeError("something broke")
 
-        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_raise):
+        with patch("services.opportunities.fetch_opportunities", side_effect=_mock_fetch):
             resp = client.post("/api/opportunities/refresh")
             assert resp.status_code == 202
             assert _wait_until_idle(timeout=3.0)
@@ -272,10 +272,10 @@ class TestRefreshEndpoint:
         fake_opps = [_make_opp(edge=0.09)]
         fake_meta = {"status_counts": {"BUY": 1}, "platforms_fetched": ["polymarket"]}
 
-        async def _mock_refresh(trigger="manual", **kwargs):
-            return store_snapshot(fake_opps, fake_meta, trigger=trigger)
+        async def _mock_fetch(cfg=None):
+            return fake_opps, fake_meta
 
-        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_refresh):
+        with patch("services.opportunities.fetch_opportunities", side_effect=_mock_fetch):
             resp = client.post("/api/opportunities/refresh")
             assert resp.status_code == 202
             assert _wait_until_idle(timeout=3.0)
@@ -300,10 +300,10 @@ class TestRefreshEndpoint:
         """POST /refresh should not start/stop/modify the scheduler."""
         fake_opps = [_make_opp()]
 
-        async def _mock_refresh(trigger="manual", **kwargs):
-            return store_snapshot(fake_opps, {"status_counts": {"BUY": 1}}, trigger=trigger)
+        async def _mock_fetch(cfg=None):
+            return fake_opps, {"status_counts": {"BUY": 1}}
 
-        with patch("services.snapshot.refresh_snapshot", side_effect=_mock_refresh):
+        with patch("services.opportunities.fetch_opportunities", side_effect=_mock_fetch):
             resp = client.post("/api/opportunities/refresh")
             assert resp.status_code == 202
             assert _wait_until_idle(timeout=3.0)

@@ -100,10 +100,10 @@ def _clean():
 class TestPostRefreshEndpoint:
     def test_returns_202_with_extended_status_shape(self):
         """POST /refresh returns 202 with all the new status fields populated."""
-        async def quick(trigger="manual", **kwargs):
-            return store_snapshot([_make_opp()], {"status_counts": {"BUY": 1}}, trigger=trigger)
+        async def quick(cfg=None):
+            return [_make_opp()], {"status_counts": {"BUY": 1}}
 
-        with patch("services.snapshot.refresh_snapshot", side_effect=quick):
+        with patch("services.opportunities.fetch_opportunities", side_effect=quick):
             resp = client.post("/api/opportunities/refresh")
             assert _wait_until_idle(timeout=3.0)
 
@@ -125,12 +125,12 @@ class TestPostRefreshEndpoint:
 class TestStartBackgroundRefresh:
     def test_returns_immediately_even_with_slow_pipeline(self):
         """start_background_refresh awaits only the spawn, not the pipeline."""
-        async def slow(trigger="manual", **kwargs):
+        async def slow(cfg=None):
             await asyncio.sleep(0.5)
-            return store_snapshot([_make_opp()], {"status_counts": {}}, trigger=trigger)
+            return [_make_opp()], {"status_counts": {}}
 
         async def run():
-            with patch("services.snapshot.refresh_snapshot", side_effect=slow):
+            with patch("services.opportunities.fetch_opportunities", side_effect=slow):
                 t0 = time.time()
                 state = await start_background_refresh()
                 elapsed_to_spawn = time.time() - t0
@@ -154,13 +154,13 @@ class TestStartBackgroundRefresh:
         """Two awaits of start_background_refresh while one is running yield one spawn."""
         spawn_count = {"n": 0}
 
-        async def slow(trigger="manual", **kwargs):
+        async def slow(cfg=None):
             spawn_count["n"] += 1
             await asyncio.sleep(0.2)
-            return store_snapshot([_make_opp()], {"status_counts": {}}, trigger=trigger)
+            return [_make_opp()], {"status_counts": {}}
 
         async def run():
-            with patch("services.snapshot.refresh_snapshot", side_effect=slow):
+            with patch("services.opportunities.fetch_opportunities", side_effect=slow):
                 # Fire two starts back-to-back; second should detect already-running
                 s1 = await start_background_refresh()
                 s2 = await start_background_refresh()
@@ -182,15 +182,15 @@ class TestStartBackgroundRefresh:
         """While the task is in flight, is_refreshing() and refresh_started_at are set."""
         observed = {}
 
-        async def slow(trigger="manual", **kwargs):
+        async def slow(cfg=None):
             # Snapshot the state at the moment the pipeline body is running
             observed["is_refreshing_during"] = is_refreshing()
             observed["refresh_started_at_during"] = _snap_mod._refresh_started_at
             observed["last_trigger_during"] = _snap_mod._last_trigger
-            return store_snapshot([_make_opp()], {"status_counts": {}}, trigger=trigger)
+            return [_make_opp()], {"status_counts": {}}
 
         async def run():
-            with patch("services.snapshot.refresh_snapshot", side_effect=slow):
+            with patch("services.opportunities.fetch_opportunities", side_effect=slow):
                 await start_background_refresh()
                 if _snap_mod._background_task is not None:
                     await _snap_mod._background_task
@@ -208,10 +208,10 @@ class TestStartBackgroundRefresh:
 
 class TestStatusFieldsAfterCompletion:
     def test_status_after_completion_records_duration(self):
-        async def quick(trigger="manual", **kwargs):
-            return store_snapshot([_make_opp()], {"status_counts": {"BUY": 1}}, trigger=trigger)
+        async def quick(cfg=None):
+            return [_make_opp()], {"status_counts": {"BUY": 1}}
 
-        with patch("services.snapshot.refresh_snapshot", side_effect=quick):
+        with patch("services.opportunities.fetch_opportunities", side_effect=quick):
             client.post("/api/opportunities/refresh")
             assert _wait_until(
                 lambda: not is_refreshing()
@@ -236,10 +236,10 @@ class TestStatusFieldsAfterCompletion:
 
 class TestErrorCapture:
     def test_pipeline_error_recorded_in_last_refresh_error(self):
-        async def failing(trigger="manual", **kwargs):
+        async def failing(cfg=None):
             raise RuntimeError("simulated pipeline failure")
 
-        with patch("services.snapshot.refresh_snapshot", side_effect=failing):
+        with patch("services.opportunities.fetch_opportunities", side_effect=failing):
             resp = client.post("/api/opportunities/refresh")
             assert resp.status_code == 202
 
@@ -259,10 +259,10 @@ class TestErrorCapture:
         assert body["last_trigger"] == "manual"
 
     def test_value_error_recorded(self):
-        async def failing(trigger="manual", **kwargs):
+        async def failing(cfg=None):
             raise ValueError("ODDS_API_KEY environment variable is not set")
 
-        with patch("services.snapshot.refresh_snapshot", side_effect=failing):
+        with patch("services.opportunities.fetch_opportunities", side_effect=failing):
             resp = client.post("/api/opportunities/refresh")
             assert resp.status_code == 202
             assert _wait_until_idle(timeout=3.0)

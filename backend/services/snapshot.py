@@ -95,29 +95,43 @@ def store_snapshot(
 async def refresh_snapshot(
     trigger: str = "manual",
     scope: str = "stale",
+    cfg=None,
 ) -> OpportunitySnapshot:
     """
     Run the pipeline and store the result as the new snapshot.
+
+    Single shared path for both manual (POST /refresh) and scheduler-driven
+    refreshes.  All callers acquire _refresh_lock so the expensive pipeline
+    cannot run concurrently from independent code paths.
 
     scope controls odds cache invalidation before the pipeline runs:
       "stale"       — only fetch sports whose TTL expired (default, cheapest)
       "all"         — invalidate entire odds cache, fetch everything fresh
       "{sport_key}" — invalidate one sport's cache, fetch it fresh
 
-    Acquires _refresh_lock to prevent concurrent pipeline runs.
-    Sets is_refreshing=True while running.
+    cfg lets the scheduler pass a custom EngineConfig (e.g. wider min_edge
+    for monitoring); falls back to DEFAULT_CONFIG when None.
 
-    Synchronous from the caller's point of view (awaits the full pipeline).
-    For non-blocking manual refreshes, use start_background_refresh().
+    Acquires _refresh_lock, manages is_refreshing/last_trigger/started_at/
+    duration/error metadata centrally so /status reflects every refresh
+    regardless of which caller initiated it.
     """
-    global _is_refreshing
+    global _is_refreshing, _refresh_started_at, _last_trigger
+    global _last_refresh_error, _last_refresh_duration_seconds
 
     # Import here to avoid circular import (snapshot ← opportunities → snapshot)
     from services.opportunities import fetch_opportunities, DEFAULT_CONFIG
     from services import odds_cache
 
+    if cfg is None:
+        cfg = DEFAULT_CONFIG
+
+    started = time.time()
+
     async with _refresh_lock:
         _is_refreshing = True
+        _refresh_started_at = started
+        _last_trigger = trigger
         try:
             # Invalidate cache per scope
             if scope == "all":
@@ -126,36 +140,34 @@ async def refresh_snapshot(
                 odds_cache.invalidate(scope)
             # "stale" → no invalidation; TTL checks in fetch_odds handle it
 
-            opportunities, meta = await fetch_opportunities(cfg=DEFAULT_CONFIG)
-            return store_snapshot(opportunities, meta, trigger=trigger)
+            opportunities, meta = await fetch_opportunities(cfg=cfg)
+            snap = store_snapshot(opportunities, meta, trigger=trigger)
+            _last_refresh_error = None
+            return snap
+        except Exception as exc:
+            # Record so /status surfaces the failure for any caller path.
+            _last_refresh_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+            raise
         finally:
+            _last_refresh_duration_seconds = time.time() - started
+            _refresh_started_at = None
             _is_refreshing = False
 
 
 async def _run_and_record(trigger: str, scope: str, started_at: float) -> None:
     """
-    Detached coroutine that runs refresh_snapshot and records timing/errors.
-    Never propagates exceptions — errors are stashed in _last_refresh_error.
-
-    `started_at` is supplied by start_background_refresh so that the timestamp
-    is visible to status readers the instant the spawn returns, not only
-    after this coroutine begins executing.
+    Detached coroutine that runs refresh_snapshot inside a `try` so the
+    spawned asyncio task never raises into the void.  All status metadata
+    (is_refreshing, started_at, duration, error, trigger) is owned by
+    refresh_snapshot itself, so this wrapper has no bookkeeping to do.
     """
-    global _is_refreshing, _refresh_started_at, _last_refresh_error
-    global _last_refresh_duration_seconds
     try:
         await refresh_snapshot(trigger=trigger, scope=scope)
-        _last_refresh_error = None
-    except Exception as exc:
+    except Exception:
         logger.exception("Background refresh failed")
-        _last_refresh_error = f"{type(exc).__name__}: {str(exc)[:300]}"
-    finally:
-        _last_refresh_duration_seconds = time.time() - started_at
-        _refresh_started_at = None
-        # Belt-and-suspenders: refresh_snapshot already resets this in its own
-        # finally block, but if it raised before entering the lock body we
-        # would leak _is_refreshing=True without this.
-        _is_refreshing = False
+        # refresh_snapshot already wrote the error to _last_refresh_error
+        # and reset the lock/flags in its finally block.
+        pass
 
 
 async def start_background_refresh(

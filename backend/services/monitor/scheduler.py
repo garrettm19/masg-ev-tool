@@ -28,8 +28,8 @@ from services.monitor.ws_polymarket import PolymarketWsConsumer
 from services.monitor.ws_kalshi import KalshiWsConsumer
 from services.monitor.state import AlertStateStore
 from services.monitor.notifier import PushoverNotifier, DryRunNotifier
-from services.opportunities import fetch_opportunities, EvaluatedOpportunity
-from services.snapshot import store_snapshot
+from services.opportunities import EvaluatedOpportunity
+from services.snapshot import refresh_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -107,19 +107,32 @@ class MonitorScheduler:
     # --- Pipeline execution ---
 
     async def _run_pipeline_and_alert(self, trigger: str = "scheduled") -> CycleResult | None:
-        """Run the full pipeline and feed results to the alert manager."""
+        """Run the full pipeline and feed results to the alert manager.
+
+        Routes through services.snapshot.refresh_snapshot so the scheduler and
+        manual POST /refresh share a single _refresh_lock — preventing
+        concurrent expensive pipeline runs and unifying refresh-status
+        observability.  If the refresh fails, NO alerts are dispatched
+        (avoids alerting from a stale previous snapshot).
+        """
         if not self.monitor_config.enabled and not self.monitor_config.dry_run:
             return None
 
         async with self._debounce_lock:
+            cfg = EngineConfig(
+                min_edge=self.monitor_config.min_ev * 0.5,  # fetch wider, filter in alert manager
+            )
             try:
-                cfg = EngineConfig(
-                    min_edge=self.monitor_config.min_ev * 0.5,  # fetch wider, filter in alert manager
-                )
-                opportunities, meta = await fetch_opportunities(cfg=cfg)
+                # Shared refresh path: acquires the snapshot _refresh_lock,
+                # records last_trigger / refresh_started_at / duration / error,
+                # stores the snapshot for dashboard reads.
+                snap = await refresh_snapshot(trigger=trigger, cfg=cfg)
+            except Exception as exc:
+                logger.error("Monitor pipeline failed [%s]: %s", trigger, exc)
+                return None
 
-                # Cache for dashboard reads
-                store_snapshot(opportunities, meta, trigger=trigger)
+            try:
+                opportunities = snap.opportunities
 
                 result = await self.alert_manager.run_cycle(opportunities)
 
@@ -138,7 +151,7 @@ class MonitorScheduler:
                 return result
 
             except Exception as exc:
-                logger.error("Monitor pipeline failed [%s]: %s", trigger, exc)
+                logger.error("Monitor alert phase failed [%s]: %s", trigger, exc)
                 return None
 
     def _update_watch_lists(self, opportunities: list[EvaluatedOpportunity]) -> None:
