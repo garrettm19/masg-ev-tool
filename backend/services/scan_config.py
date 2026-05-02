@@ -1,8 +1,16 @@
 """
 Scan configuration — per-sport fetch control and cost management.
 
-Determines which sports are fetched, how often, and how long cached
-odds are considered fresh. Derived from sports_config.SPORTS on startup.
+Determines which sports are fetched, how often, how long cached
+odds are considered fresh, AND which prediction-market platforms
+(Polymarket, Kalshi) participate in each scan.
+
+Defaults:
+  - Kalshi:     enabled=True
+  - Polymarket: enabled=False
+The scanner is a single-user local tool; defaults are tuned for the
+user's primary book of record.  Polymarket can be re-enabled at
+runtime via POST /api/scan/config.
 """
 from __future__ import annotations
 
@@ -23,14 +31,32 @@ class SportScanConfig:
 
 
 @dataclass
+class PlatformScanConfig:
+    """Per-platform scan settings — controls whether the adapter runs."""
+    name: str                # "polymarket" | "kalshi"
+    label: str = ""
+    enabled: bool = True
+
+
+@dataclass
 class ScanConfig:
-    """Global scan settings wrapping per-sport configs."""
+    """Global scan settings wrapping per-sport and per-platform configs."""
     sports: dict[str, SportScanConfig] = field(default_factory=dict)
+    platforms: dict[str, PlatformScanConfig] = field(default_factory=dict)
     global_max_odds_api_per_day: int = 200
 
 
+def _default_platforms() -> dict[str, PlatformScanConfig]:
+    """Default platform map — Kalshi on, Polymarket off."""
+    return {
+        "kalshi": PlatformScanConfig(name="kalshi", label="Kalshi", enabled=True),
+        "polymarket": PlatformScanConfig(name="polymarket", label="Polymarket", enabled=False),
+    }
+
+
 def build_default_scan_config() -> ScanConfig:
-    """Build ScanConfig from the SPORTS registry (enabled sports only)."""
+    """Build ScanConfig from the SPORTS registry (enabled sports only) and
+    the default platform map."""
     from services.sports_config import SPORTS
 
     sports: dict[str, SportScanConfig] = {}
@@ -44,7 +70,7 @@ def build_default_scan_config() -> ScanConfig:
             odds_ttl_seconds=900,
             market_types=list(sc.market_types),
         )
-    return ScanConfig(sports=sports)
+    return ScanConfig(sports=sports, platforms=_default_platforms())
 
 
 # Module-level singleton
@@ -64,6 +90,7 @@ def update_scan_config(updates: dict) -> ScanConfig:
 
     Accepts:
       {"sports": {"tennis": {"enabled": false, "odds_ttl_seconds": 1800}}}
+      {"platforms": {"polymarket": {"enabled": true}}}
       {"global_max_odds_api_per_day": 100}
     """
     cfg = get_scan_config()
@@ -78,6 +105,14 @@ def update_scan_config(updates: dict) -> ScanConfig:
         for k, v in sport_updates.items():
             if hasattr(sc, k):
                 setattr(sc, k, v)
+
+    for platform_name, platform_updates in updates.get("platforms", {}).items():
+        if platform_name not in cfg.platforms:
+            continue
+        pc = cfg.platforms[platform_name]
+        for k, v in platform_updates.items():
+            if hasattr(pc, k):
+                setattr(pc, k, v)
 
     return cfg
 

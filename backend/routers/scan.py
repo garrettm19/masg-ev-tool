@@ -28,24 +28,39 @@ class SportScanOut(BaseModel):
     market_types: list[str]
 
 
+class PlatformScanOut(BaseModel):
+    name: str
+    label: str
+    enabled: bool
+
+
 class ScanConfigResponse(BaseModel):
     sports: dict[str, SportScanOut]
+    platforms: dict[str, PlatformScanOut]
     global_max_odds_api_per_day: int
     odds_cache: dict[str, dict]
 
 
-@router.get("/scan/config", response_model=ScanConfigResponse)
-async def get_config() -> ScanConfigResponse:
-    """Return current scan configuration and cache state."""
+def _build_response() -> ScanConfigResponse:
     cfg = get_scan_config()
     return ScanConfigResponse(
         sports={
             k: SportScanOut(**asdict(v))
             for k, v in cfg.sports.items()
         },
+        platforms={
+            k: PlatformScanOut(**asdict(v))
+            for k, v in cfg.platforms.items()
+        },
         global_max_odds_api_per_day=cfg.global_max_odds_api_per_day,
         odds_cache=cache_status(),
     )
+
+
+@router.get("/scan/config", response_model=ScanConfigResponse)
+async def get_config() -> ScanConfigResponse:
+    """Return current scan configuration and cache state."""
+    return _build_response()
 
 
 @router.post("/scan/config", response_model=ScanConfigResponse)
@@ -56,18 +71,12 @@ async def post_config(updates: dict) -> ScanConfigResponse:
     Examples:
       {"sports": {"tennis": {"enabled": false}}}
       {"sports": {"cricket_ipl": {"odds_ttl_seconds": 1800}}}
+      {"platforms": {"polymarket": {"enabled": true}}}
       {"global_max_odds_api_per_day": 100}
     """
-    cfg = update_scan_config(updates)
+    update_scan_config(updates)
     logger.info("Scan config updated: %s", updates)
-    return ScanConfigResponse(
-        sports={
-            k: SportScanOut(**asdict(v))
-            for k, v in cfg.sports.items()
-        },
-        global_max_odds_api_per_day=cfg.global_max_odds_api_per_day,
-        odds_cache=cache_status(),
-    )
+    return _build_response()
 
 
 class BookStatus(BaseModel):

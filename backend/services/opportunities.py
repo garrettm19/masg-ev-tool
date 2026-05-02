@@ -328,7 +328,17 @@ async def fetch_opportunities(
       Pass B: evaluate rules → classify → Kelly → deduplicate → sort
     """
     if adapters is None:
-        adapters = DEFAULT_ADAPTERS
+        # Filter DEFAULT_ADAPTERS by ScanConfig.platforms toggles.  Default
+        # ScanConfig has Kalshi enabled, Polymarket disabled — so a default
+        # scan never invokes PolymarketAdapter.fetch_markets unless the
+        # platform is explicitly enabled via /api/scan/config.
+        from services.scan_config import get_scan_config
+        scan_cfg = get_scan_config()
+        adapters = [
+            a for a in DEFAULT_ADAPTERS
+            if scan_cfg.platforms.get(a.platform_name) is None
+            or scan_cfg.platforms[a.platform_name].enabled
+        ]
 
     # --- Fetch all sources in parallel ---
     fetch_tasks = [a.fetch_markets() for a in adapters]

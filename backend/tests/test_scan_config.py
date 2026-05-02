@@ -165,3 +165,69 @@ class TestOddsCache:
         assert "sport_a" in status
         assert status["sport_a"]["event_count"] == 2
         assert status["sport_a"]["age_seconds"] < 5
+
+
+# ---------------------------------------------------------------------------
+# Platform toggles — Kalshi enabled by default, Polymarket disabled.
+# ---------------------------------------------------------------------------
+
+class TestPlatformDefaults:
+    def test_default_platforms_present(self):
+        cfg = build_default_scan_config()
+        assert "kalshi" in cfg.platforms
+        assert "polymarket" in cfg.platforms
+
+    def test_kalshi_enabled_by_default(self):
+        cfg = build_default_scan_config()
+        assert cfg.platforms["kalshi"].enabled is True
+
+    def test_polymarket_disabled_by_default(self):
+        cfg = build_default_scan_config()
+        assert cfg.platforms["polymarket"].enabled is False
+
+    def test_singleton_get_scan_config_returns_defaults(self):
+        cfg = get_scan_config()
+        assert cfg.platforms["kalshi"].enabled is True
+        assert cfg.platforms["polymarket"].enabled is False
+
+
+class TestPlatformUpdate:
+    def test_enable_polymarket(self):
+        update_scan_config({"platforms": {"polymarket": {"enabled": True}}})
+        cfg = get_scan_config()
+        assert cfg.platforms["polymarket"].enabled is True
+        # Kalshi state preserved
+        assert cfg.platforms["kalshi"].enabled is True
+
+    def test_disable_kalshi(self):
+        update_scan_config({"platforms": {"kalshi": {"enabled": False}}})
+        cfg = get_scan_config()
+        assert cfg.platforms["kalshi"].enabled is False
+        assert cfg.platforms["polymarket"].enabled is False
+
+    def test_disable_both(self):
+        update_scan_config({
+            "platforms": {
+                "kalshi": {"enabled": False},
+                "polymarket": {"enabled": False},
+            }
+        })
+        cfg = get_scan_config()
+        assert cfg.platforms["kalshi"].enabled is False
+        assert cfg.platforms["polymarket"].enabled is False
+
+    def test_unknown_platform_silently_ignored(self):
+        """Unknown platform key in update payload is dropped, not crashed on."""
+        update_scan_config({"platforms": {"betfair": {"enabled": True}}})
+        cfg = get_scan_config()
+        assert "betfair" not in cfg.platforms
+        # Defaults intact
+        assert cfg.platforms["kalshi"].enabled is True
+        assert cfg.platforms["polymarket"].enabled is False
+
+    def test_update_does_not_clobber_sports_section(self):
+        """Updating platforms must not blow away the sports map."""
+        before = dict(get_scan_config().sports)
+        update_scan_config({"platforms": {"polymarket": {"enabled": True}}})
+        after = dict(get_scan_config().sports)
+        assert before.keys() == after.keys()

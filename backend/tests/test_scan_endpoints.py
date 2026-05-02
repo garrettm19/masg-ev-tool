@@ -153,3 +153,57 @@ class TestSportsRegistry:
         # Registry still shows tennis (it's a static config, not scan state)
         assert "tennis" in body
         assert body["tennis"]["label"] == "Tennis"
+
+
+# ---------------------------------------------------------------------------
+# Platform toggle exposure on /api/scan/config
+# ---------------------------------------------------------------------------
+
+class TestPlatformsInScanConfigEndpoint:
+    def test_get_returns_platforms_with_defaults(self):
+        resp = client.get("/api/scan/config")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "platforms" in body
+        assert "kalshi" in body["platforms"]
+        assert "polymarket" in body["platforms"]
+        assert body["platforms"]["kalshi"]["enabled"] is True
+        assert body["platforms"]["polymarket"]["enabled"] is False
+        assert body["platforms"]["kalshi"]["label"] == "Kalshi"
+        assert body["platforms"]["polymarket"]["label"] == "Polymarket"
+
+    def test_post_can_enable_polymarket(self):
+        resp = client.post(
+            "/api/scan/config",
+            json={"platforms": {"polymarket": {"enabled": True}}},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["platforms"]["polymarket"]["enabled"] is True
+        assert body["platforms"]["kalshi"]["enabled"] is True
+
+    def test_post_can_disable_kalshi(self):
+        resp = client.post(
+            "/api/scan/config",
+            json={"platforms": {"kalshi": {"enabled": False}}},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["platforms"]["kalshi"]["enabled"] is False
+
+    def test_post_persists_across_get(self):
+        client.post(
+            "/api/scan/config",
+            json={"platforms": {"polymarket": {"enabled": True}}},
+        )
+        body = client.get("/api/scan/config").json()
+        assert body["platforms"]["polymarket"]["enabled"] is True
+
+    def test_post_sport_update_does_not_disturb_platforms(self):
+        client.post(
+            "/api/scan/config",
+            json={"sports": {"tennis": {"enabled": False}}},
+        )
+        body = client.get("/api/scan/config").json()
+        assert body["platforms"]["kalshi"]["enabled"] is True
+        assert body["platforms"]["polymarket"]["enabled"] is False
