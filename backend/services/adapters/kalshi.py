@@ -405,10 +405,12 @@ def _build_event_markets(
                 url=url,
                 timestamp=team["close_time"],
                 question=question,
-                # Prefer the API close_time (actual UTC game start) over the
-                # date-only ticker fallback. Team-sport tickers carry HHMM
-                # but _extract_match_date_from_ticker discards it.
-                end_date=team["close_time"] or _extract_match_date_from_ticker(event_ticker),
+                # Prefer the ticker-derived game date.  Kalshi `close_time`
+                # is the market settlement deadline (often ~2 weeks after the
+                # game), NOT the game start, so it cannot be used as the
+                # primary timing signal.  close_time only serves as a fallback
+                # for tickers without a parseable date.
+                end_date=_extract_match_date_from_ticker(event_ticker) or team["close_time"],
                 outcome_prices=[str(round(price, 4)), str(complement)],
                 event_slug=event_ticker,
                 bid_ask_spread=spread,
@@ -435,8 +437,9 @@ def _build_event_markets(
         url=url,
         timestamp=m1["close_time"],
         question=question,
-        # Prefer API close_time over the date-only ticker fallback (see above).
-        end_date=m1["close_time"] or _extract_match_date_from_ticker(event_ticker),
+        # Prefer ticker-derived game date over close_time (settlement). See
+        # comment on the 3-way emit path above.
+        end_date=_extract_match_date_from_ticker(event_ticker) or m1["close_time"],
         outcome_prices=outcome_prices,
         event_slug=event_ticker,
         bid_ask_spread=m1_spread,
@@ -483,9 +486,10 @@ def _single_market_fallback(
         url=f"https://kalshi.com/markets/{series_ticker.lower()}/{series_slug}/{event_ticker.lower()}",
         timestamp=m.get("close_time") or m.get("expiration_time"),
         question=m.get("title", ""),
-        # Prefer API close_time over the date-only ticker fallback (see above).
-        end_date=(m.get("close_time") or m.get("expiration_time")
-                  or _extract_match_date_from_ticker(event_ticker)),
+        # Prefer ticker-derived game date over close_time (settlement) — see
+        # _build_event_markets above for rationale.
+        end_date=(_extract_match_date_from_ticker(event_ticker)
+                  or m.get("close_time") or m.get("expiration_time")),
         outcome_prices=[str(round(yes_ask, 4)), str(no_price)],
         event_slug=event_ticker,
         bid_ask_spread=spread,

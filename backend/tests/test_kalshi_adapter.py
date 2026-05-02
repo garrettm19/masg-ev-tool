@@ -1093,40 +1093,39 @@ class TestSeriesCounts:
 
 
 # ---------------------------------------------------------------------------
-# end_date precedence: actual game start (close_time) over date-only ticker
+# end_date precedence: ticker-date FIRST, close_time only as fallback.
+#
+# Rationale: Kalshi `close_time` is the market settlement deadline, typically
+# set ~2 weeks after the actual game (e.g. KXNBAGAME-26MAY04… closes 2026-05-18).
+# Using close_time as a primary timing signal makes every Kalshi market look
+# 14 days off any FD event and over-suppresses the entire feed.
 # ---------------------------------------------------------------------------
 
-class TestEndDateUsesCloseTime:
-    """
-    Regression for the Kalshi wrong-game series bug:
-    KXMLBGAME tickers carry HHMM (e.g. KXMLBGAME-26MAY031415LADSTL = May 3 14:15 ET)
-    but `_extract_match_date_from_ticker` only parses YYMONDD. The adapter must
-    therefore prefer the API close_time (full UTC datetime) over the date-only
-    ticker fallback so date_delta_hours can be computed accurately.
-    """
-
-    def test_close_time_preferred_over_ticker_date_paired(self):
-        """Paired team-sport markets emit end_date from close_time, not T23:59 fallback."""
+class TestEndDatePrefersTickerDate:
+    def test_ticker_date_preferred_over_close_time_paired(self):
+        """Paired team-sport markets emit end_date from the ticker's YYMONDD,
+        NOT the much-later settlement close_time."""
         ma = _make_market_entry(
             ticker="KXMLBGAME-26MAY031415LADSTL-LAD",
             title="Los Angeles Dodgers vs St. Louis Cardinals winner?",
             yes_ask=0.58,
             no_ask=0.44,
-            close_time="2026-05-03T18:15:00Z",
+            close_time="2026-05-17T18:15:00Z",  # settlement, ~2 weeks after game
         )
         mb = _make_market_entry(
             ticker="KXMLBGAME-26MAY031415LADSTL-STL",
             title="Los Angeles Dodgers vs St. Louis Cardinals winner?",
             yes_ask=0.44,
             no_ask=0.58,
-            close_time="2026-05-03T18:15:00Z",
+            close_time="2026-05-17T18:15:00Z",
         )
         nm = _build_one("KXMLBGAME-26MAY031415LADSTL", [ma, mb])
         assert nm is not None
-        assert nm.end_date == "2026-05-03T18:15:00Z"
+        # Ticker-derived game date beats the settlement timestamp
+        assert nm.end_date == "2026-05-03T23:59:00Z"
 
-    def test_close_time_preferred_over_ticker_date_single(self):
-        """Single-market fallback path also prefers close_time."""
+    def test_ticker_date_preferred_over_close_time_single(self):
+        """Single-market fallback path also prefers ticker-derived game date."""
         from services.adapters.kalshi import _single_market_fallback
         m = {
             "ticker": "KXMLBGAME-26MAY031415LADSTL-LAD",
@@ -1136,31 +1135,32 @@ class TestEndDateUsesCloseTime:
             "no_ask_dollars": "0.44",
             "yes_bid_dollars": "0.56",
             "yes_sub_title": "Los Angeles Dodgers",
-            "close_time": "2026-05-03T18:15:00Z",
+            "close_time": "2026-05-17T18:15:00Z",  # settlement, ~2 weeks later
             "volume_fp": "100",
             "liquidity_dollars": "500",
         }
         nm = _single_market_fallback(m, "KXMLBGAME", "mlb-game")
         assert nm is not None
-        assert nm.end_date == "2026-05-03T18:15:00Z"
+        assert nm.end_date == "2026-05-03T23:59:00Z"
 
-    def test_falls_back_to_ticker_date_when_close_time_missing(self):
-        """Legacy fallback: when close_time is absent, date-only ticker parse is used."""
+    def test_falls_back_to_close_time_when_ticker_has_no_date(self):
+        """Fallback: when the event_ticker has no parseable YYMONDD, close_time
+        is used (legacy non-sports tickers and edge cases)."""
         ma = _make_market_entry(
-            ticker="KXATPMATCH-26APR08MOURUU-MOU",
-            title="Will Moutet win the Moutet vs Ruud match?",
+            ticker="KXSPECIAL-NODATE-A",
+            title="Will A win?",
             yes_ask=0.55,
             no_ask=0.47,
-            close_time="",  # missing
+            close_time="2026-06-01T18:00:00Z",
         )
         mb = _make_market_entry(
-            ticker="KXATPMATCH-26APR08MOURUU-RUU",
-            title="Will Ruud win the Moutet vs Ruud match?",
+            ticker="KXSPECIAL-NODATE-B",
+            title="Will B win?",
             yes_ask=0.47,
             no_ask=0.55,
-            close_time="",
+            close_time="2026-06-01T18:00:00Z",
         )
-        nm = _build_one("KXATPMATCH-26APR08MOURUU", [ma, mb])
+        nm = _build_one("KXSPECIAL-NODATE", [ma, mb])
         assert nm is not None
-        # Falls back to date-only ticker parse for the legacy/no-close-time case
-        assert nm.end_date == "2026-04-08T23:59:00Z"
+        # No YYMONDD in event_ticker → falls through to close_time
+        assert nm.end_date == "2026-06-01T18:00:00Z"
