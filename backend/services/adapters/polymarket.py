@@ -187,6 +187,11 @@ class PolymarketAdapter:
                 continue
             if not (0.02 < best_bid < 0.98):
                 continue
+            # Reject crossed books (best_bid > best_ask) — these are
+            # stale/inconsistent snapshots; the negative spread would
+            # otherwise pass the spread-magnitude check.
+            if best_bid > best_ask:
+                continue
             spread = best_ask - best_bid
             # Round to 4 decimals before threshold check — Polymarket prices
             # are quoted to 1¢, so float subtraction artifacts shouldn't push
@@ -194,9 +199,13 @@ class PolymarketAdapter:
             if round(spread, 4) > _MAX_BID_ASK_SPREAD:
                 continue
 
-            # Live outcome_prices for both sides when both books are available.
-            # Falls back to swapped Gamma values for observability only when the
-            # NO-side book is missing — never used for pricing.
+            # Live outcome_prices for both sides.  When the NO-side book is
+            # available with asks, use its best ask directly.  When it's
+            # missing/empty, derive the opposite side as 1 - best_ask so
+            # outcome_prices stays internally consistent with the YES side
+            # CLOB price.  Never fall back to Gamma metadata here: stale
+            # 0.5/0.5 defaults would otherwise contaminate the consistency
+            # check downstream in feature_extractor.
             book_no = books.get(tok_no)
             if book_no is not None and book_no.asks:
                 live_outcome_prices = [
@@ -204,7 +213,10 @@ class PolymarketAdapter:
                     f"{book_no.asks[0].price:.4f}",
                 ]
             else:
-                live_outcome_prices = c["outcome_prices"]
+                live_outcome_prices = [
+                    f"{best_ask:.4f}",
+                    f"{1.0 - best_ask:.4f}",
+                ]
 
             mkt = c["mkt"]
             url = f"https://polymarket.com/event/{c['event_slug']}" if c["event_slug"] else None

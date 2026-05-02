@@ -675,3 +675,114 @@ class TestClobPricing:
         called_with = mock_books.call_args.args[0]
         assert sorted(called_with) == sorted(["tok_a", "tok_b", "tok_c"])
         assert len(called_with) == 3  # not 6
+
+
+# ---------------------------------------------------------------------------
+# Book-integrity guards: crossed books and missing NO-side fallback
+# ---------------------------------------------------------------------------
+
+class TestBookIntegrityGuards:
+    @patch("services.adapters.polymarket.all_pm_tags", return_value=["basketball"])
+    @patch("services.adapters.polymarket.fetch_markets_by_tags", new_callable=AsyncMock)
+    @patch("services.adapters.polymarket.fetch_books", new_callable=AsyncMock)
+    def test_crossed_book_dropped(self, mock_books, mock_fetch, mock_tags):
+        """best_bid > best_ask → market dropped (stale/inconsistent snapshot)."""
+        mock_books.return_value = {
+            "tok_a": OrderBook(
+                token_id="tok_a",
+                bids=[BookLevel(price=0.60, size=100)],   # bid above ask = crossed
+                asks=[BookLevel(price=0.55, size=100)],
+            ),
+            "tok_b": _book("tok_b", 0.45, 0.42),
+        }
+        mkt = _make_market(outcomes=["Yes", "No"], outcome_prices=["0.55", "0.45"])
+        mock_fetch.return_value = [mkt.model_dump()]
+        adapter = PolymarketAdapter()
+
+        with patch("services.matcher.classify_pm_market_type", return_value="h2h"):
+            markets = asyncio.run(adapter.fetch_markets())
+
+        assert len(markets) == 0
+
+    @patch("services.adapters.polymarket.all_pm_tags", return_value=["basketball"])
+    @patch("services.adapters.polymarket.fetch_markets_by_tags", new_callable=AsyncMock)
+    @patch("services.adapters.polymarket.fetch_books", new_callable=AsyncMock)
+    def test_normal_non_crossed_book_passes(self, mock_books, mock_fetch, mock_tags):
+        """Sanity: non-crossed book still emits; the new guard doesn't over-fire."""
+        mock_books.return_value = _default_books(asks=(0.55, 0.45), bids=(0.52, 0.42))
+        mkt = _make_market(outcomes=["Yes", "No"], outcome_prices=["0.55", "0.45"])
+        mock_fetch.return_value = [mkt.model_dump()]
+        adapter = PolymarketAdapter()
+
+        with patch("services.matcher.classify_pm_market_type", return_value="h2h"):
+            markets = asyncio.run(adapter.fetch_markets())
+
+        assert len(markets) == 1
+        assert markets[0].price == pytest.approx(0.55)
+
+    @patch("services.adapters.polymarket.all_pm_tags", return_value=["basketball"])
+    @patch("services.adapters.polymarket.fetch_markets_by_tags", new_callable=AsyncMock)
+    @patch("services.adapters.polymarket.fetch_books", new_callable=AsyncMock)
+    def test_missing_no_book_derives_opposite_from_yes(self, mock_books, mock_fetch, mock_tags):
+        """When NO-side book is missing, outcome_prices[1] = 1 - best_ask, not Gamma."""
+        # Only tok_a (YES) has a book; tok_b (NO) is absent from the returned dict
+        mock_books.return_value = {
+            "tok_a": _book("tok_a", best_ask=0.62, best_bid=0.60),
+        }
+        # Gamma reports stale 0.5/0.5; the adapter must NOT use it
+        mkt = _make_market(outcomes=["Yes", "No"], outcome_prices=["0.50", "0.50"])
+        mock_fetch.return_value = [mkt.model_dump()]
+        adapter = PolymarketAdapter()
+
+        with patch("services.matcher.classify_pm_market_type", return_value="h2h"):
+            markets = asyncio.run(adapter.fetch_markets())
+
+        assert len(markets) == 1
+        assert markets[0].price == pytest.approx(0.62)
+        # outcome_prices = [0.6200, 1.0 - 0.62 = 0.3800]
+        assert markets[0].outcome_prices == ["0.6200", "0.3800"]
+
+    @patch("services.adapters.polymarket.all_pm_tags", return_value=["basketball"])
+    @patch("services.adapters.polymarket.fetch_markets_by_tags", new_callable=AsyncMock)
+    @patch("services.adapters.polymarket.fetch_books", new_callable=AsyncMock)
+    def test_gamma_5050_with_missing_no_book_does_not_contaminate(self, mock_books, mock_fetch, mock_tags):
+        """Stale Gamma 0.5/0.5 + only YES CLOB book → opposite side derived
+        from 1 - best_ask, never the stale 0.5 metadata."""
+        mock_books.return_value = {
+            "tok_a": _book("tok_a", best_ask=0.32, best_bid=0.30),
+            # tok_b book intentionally omitted
+        }
+        mkt = _make_market(outcomes=["Yes", "No"], outcome_prices=["0.50", "0.50"])
+        mock_fetch.return_value = [mkt.model_dump()]
+        adapter = PolymarketAdapter()
+
+        with patch("services.matcher.classify_pm_market_type", return_value="h2h"):
+            markets = asyncio.run(adapter.fetch_markets())
+
+        assert len(markets) == 1
+        # Pricing still from YES CLOB best ask
+        assert markets[0].price == pytest.approx(0.32)
+        # outcome_prices[1] derived (1 - 0.32 = 0.68), NOT Gamma 0.5
+        assert markets[0].outcome_prices == ["0.3200", "0.6800"]
+        assert "0.5" not in markets[0].outcome_prices[1]
+        assert "0.5000" not in markets[0].outcome_prices[1]
+
+    @patch("services.adapters.polymarket.all_pm_tags", return_value=["basketball"])
+    @patch("services.adapters.polymarket.fetch_markets_by_tags", new_callable=AsyncMock)
+    @patch("services.adapters.polymarket.fetch_books", new_callable=AsyncMock)
+    def test_two_sided_clob_uses_both_live_asks(self, mock_books, mock_fetch, mock_tags):
+        """When both books exist, outcome_prices reflects both live best asks."""
+        mock_books.return_value = {
+            "tok_a": _book("tok_a", best_ask=0.62, best_bid=0.60),
+            "tok_b": _book("tok_b", best_ask=0.41, best_bid=0.39),
+        }
+        mkt = _make_market(outcomes=["Yes", "No"], outcome_prices=["0.60", "0.40"])
+        mock_fetch.return_value = [mkt.model_dump()]
+        adapter = PolymarketAdapter()
+
+        with patch("services.matcher.classify_pm_market_type", return_value="h2h"):
+            markets = asyncio.run(adapter.fetch_markets())
+
+        assert len(markets) == 1
+        # Both sides taken from CLOB best asks (NOT 1 - best_ask derivation)
+        assert markets[0].outcome_prices == ["0.6200", "0.4100"]
