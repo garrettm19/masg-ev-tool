@@ -44,7 +44,7 @@ function oppKey(o: Opportunity): string {
 
 export function DashboardClient({ initialData }: Props) {
   const init = initialData ?? EMPTY_DATA;
-  const [edgeInput, setEdgeInput] = useState("5");
+  const [edgeInput, setEdgeInput] = useState("4");
   const [bankrollInput, setBankrollInput] = useState("1000");
   const [bankroll, setBankroll] = useState(1000);
   const [data, setData] = useState<OpportunitiesResponse>(init);
