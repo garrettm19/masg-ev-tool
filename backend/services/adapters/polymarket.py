@@ -44,20 +44,33 @@ def _extract_game_date_from_slug(slug: str) -> str | None:
     return None
 
 
-def _is_game_date_past(slug: str) -> bool:
+def _is_game_date_past(slug: str, now=None) -> bool:
     """
-    Check if the game date extracted from the slug is in the past.
+    Check if the game date extracted from the slug is more than 24 hours
+    in the past.
 
-    Returns True if the game date is before today (UTC), meaning the
-    market is live or completed. Returns False if no date in slug.
+    Polymarket slugs encode the U.S. calendar date of the game, not the
+    exact UTC start time.  Late-evening U.S. games (e.g., NBA Sunday-night
+    tip-off at 9:30 PM ET) start AFTER UTC midnight of the slug day, so a
+    naive `game_date < now` test would mark a not-yet-started game as
+    "past" during the most actionable pre-game window.
+
+    Adding a 24-hour grace window keeps obviously stale markets filtered
+    while letting late-evening U.S. games survive until the CLOB
+    book / acceptingOrders filters can drop them after settlement.
+
+    `now` may be supplied for deterministic tests; defaults to the current
+    UTC time. Returns False if no date in slug.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     game_date_str = _extract_game_date_from_slug(slug)
     if not game_date_str:
         return False
     try:
         game_date = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
-        return game_date < datetime.now(timezone.utc)
+        if now is None:
+            now = datetime.now(timezone.utc)
+        return game_date < now - timedelta(hours=24)
     except (ValueError, AttributeError):
         return False
 

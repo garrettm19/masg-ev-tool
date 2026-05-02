@@ -246,6 +246,52 @@ class TestLiveGameFiltering:
     def test_no_date_in_slug(self):
         assert _is_game_date_past("some-event") is False
 
+    # ---- 24-hour grace window (deterministic, fixed `now`) -----------------
+
+    def test_late_evening_us_game_not_past_before_tipoff(self):
+        """NBA Sunday-night game on slug 2026-05-04 (tip-off May 5 01:30 UTC).
+        At 2026-05-05T00:30Z (May 4 8:30 PM ET, BEFORE tip-off), the slug
+        date must NOT be considered past."""
+        from datetime import datetime, timezone
+        now = datetime(2026, 5, 5, 0, 30, tzinfo=timezone.utc)
+        assert _is_game_date_past("nba-min-sas-2026-05-04", now=now) is False
+
+    def test_late_evening_us_game_not_past_during_game(self):
+        """At 2026-05-05T03:00Z (May 4 11:00 PM ET, mid-game), slug
+        2026-05-04 is still inside the 24h grace window."""
+        from datetime import datetime, timezone
+        now = datetime(2026, 5, 5, 3, 0, tzinfo=timezone.utc)
+        assert _is_game_date_past("nba-min-sas-2026-05-04", now=now) is False
+
+    def test_today_afternoon_game_not_past(self):
+        """A game scheduled for today (slug 2026-05-05) at any time during
+        the same UTC day must not be classified past."""
+        from datetime import datetime, timezone
+        now = datetime(2026, 5, 5, 18, 0, tzinfo=timezone.utc)
+        assert _is_game_date_past("nba-bos-mia-2026-05-05", now=now) is False
+
+    def test_yesterday_within_24h_grace_not_past(self):
+        """Slug 2026-05-04 (T23:59Z anchor) is 12.5h before now=2026-05-05T12:30Z;
+        within the 24h grace, so NOT past. Lets settlement-window markets
+        survive until CLOB / acceptingOrders catches them."""
+        from datetime import datetime, timezone
+        now = datetime(2026, 5, 5, 12, 30, tzinfo=timezone.utc)
+        assert _is_game_date_past("nba-bos-mia-2026-05-04", now=now) is False
+
+    def test_two_day_old_slug_is_past(self):
+        """Slug 2026-05-03 vs now=2026-05-05T12:30Z is ~36h after T23:59Z anchor;
+        beyond the 24h grace → past."""
+        from datetime import datetime, timezone
+        now = datetime(2026, 5, 5, 12, 30, tzinfo=timezone.utc)
+        assert _is_game_date_past("nba-bos-mia-2026-05-03", now=now) is True
+
+    def test_just_past_24h_grace_is_past(self):
+        """Boundary: anchor T23:59Z May 4 + 24h = T23:59Z May 5; at
+        T00:00Z May 6 (1 minute after), slug 2026-05-04 flips to past."""
+        from datetime import datetime, timezone
+        now = datetime(2026, 5, 6, 0, 0, tzinfo=timezone.utc)
+        assert _is_game_date_past("nba-bos-mia-2026-05-04", now=now) is True
+
     @patch("services.adapters.polymarket.all_pm_tags", return_value=["baseball"])
     @patch("services.adapters.polymarket.fetch_markets_by_tags", new_callable=AsyncMock)
     @patch("services.adapters.polymarket.fetch_books", new_callable=AsyncMock)
