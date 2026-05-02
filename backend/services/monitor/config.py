@@ -29,7 +29,10 @@ class MonitorConfig:
 
     # --- Filters ---
     min_ev: float = 0.05                           # minimum edge to alert (5%)
-    platforms: list[str] = field(default_factory=lambda: ["polymarket", "kalshi"])
+    # Alert-side platform allowlist.  Default mirrors ScanConfig's default
+    # (Kalshi enabled, Polymarket disabled).  Operator can re-add "polymarket"
+    # via POST /api/monitor/config when explicitly enabling that book.
+    platforms: list[str] = field(default_factory=lambda: ["kalshi"])
     market_types: list[str] = field(default_factory=lambda: ["h2h"])
     exclude_ambiguity_downgraded: bool = True
 
