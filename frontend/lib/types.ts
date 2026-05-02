@@ -128,6 +128,21 @@ export interface SportDataStatus {
   kalshi: BookStatus;
 }
 
+export interface PlatformScanConfig {
+  name: string;
+  label: string;
+  enabled: boolean;
+}
+
+export interface ScanConfigResponse {
+  // Sport entries are not exhaustively typed here — the dashboard only
+  // needs the platforms map and global budget for the Books toggles.
+  sports: Record<string, { key: string; label: string; enabled: boolean; odds_ttl_seconds: number; market_types: string[] }>;
+  platforms: Record<string, PlatformScanConfig>;
+  global_max_odds_api_per_day: number;
+  odds_cache: Record<string, Record<string, unknown>>;
+}
+
 export interface SnapshotStatus {
   has_snapshot: boolean;
   updated_at: number | null;

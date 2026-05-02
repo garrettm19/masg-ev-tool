@@ -1,4 +1,4 @@
-import { OpportunitiesResponse, SnapshotStatus, SportDataStatus } from "./types";
+import { OpportunitiesResponse, ScanConfigResponse, SnapshotStatus, SportDataStatus } from "./types";
 import type { SportRegistryEntry } from "./sport-labels";
 
 const BACKEND_URL =
@@ -65,6 +65,22 @@ export async function fetchSportsRegistry(): Promise<Record<string, SportRegistr
 
 export async function fetchDataStatus(): Promise<SportDataStatus[]> {
   const res = await fetch(`${BACKEND_URL}/api/data-status`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Backend error: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchScanConfig(): Promise<ScanConfigResponse> {
+  const res = await fetch(`${BACKEND_URL}/api/scan/config`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Backend error: ${res.status}`);
+  return res.json();
+}
+
+export async function updateScanConfig(updates: Record<string, unknown>): Promise<ScanConfigResponse> {
+  const res = await fetch(`${BACKEND_URL}/api/scan/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
   if (!res.ok) throw new Error(`Backend error: ${res.status}`);
   return res.json();
 }

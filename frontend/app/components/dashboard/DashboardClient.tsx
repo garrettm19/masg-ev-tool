@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Opportunity, OpportunitiesResponse } from "@/lib/types";
-import { fetchSnapshotStatus, fetchSnapshot, refreshOpportunities, fetchSportsRegistry } from "@/lib/api";
+import { fetchSnapshotStatus, fetchSnapshot, refreshOpportunities, fetchSportsRegistry, fetchScanConfig, updateScanConfig } from "@/lib/api";
 import { startMonitoring, stopMonitoring } from "@/lib/monitor-api";
 import { sportLabel, marketTypeLabel, isPropType, SportRegistryEntry } from "@/lib/sport-labels";
 import { useTrackedPositions } from "@/lib/useTrackedPositions";
@@ -74,6 +74,43 @@ export function DashboardClient({ initialData }: Props) {
     fetchSportsRegistry().then(setSportsRegistry).catch(() => {});
   }, []);
 
+  // Books / platform toggles — backend ScanConfig is source of truth.
+  // Defaults: Kalshi=true, Polymarket=false. Initialized from server on mount.
+  const [platformEnabled, setPlatformEnabled] = useState<Record<string, boolean>>({
+    kalshi: true,
+    polymarket: false,
+  });
+  const [platformLabels, setPlatformLabels] = useState<Record<string, string>>({
+    kalshi: "Kalshi",
+    polymarket: "Polymarket",
+  });
+  useEffect(() => {
+    fetchScanConfig()
+      .then((cfg) => {
+        const enabled: Record<string, boolean> = {};
+        const labels: Record<string, string> = {};
+        for (const [name, p] of Object.entries(cfg.platforms || {})) {
+          enabled[name] = p.enabled;
+          labels[name] = p.label || name;
+        }
+        if (Object.keys(enabled).length > 0) {
+          setPlatformEnabled(enabled);
+          setPlatformLabels(labels);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const togglePlatform = useCallback((name: string, enabled: boolean) => {
+    // Optimistic UI flip first; revert on failure.
+    setPlatformEnabled((prev) => ({ ...prev, [name]: enabled }));
+    updateScanConfig({ platforms: { [name]: { enabled } } }).catch(() => {
+      setPlatformEnabled((prev) => ({ ...prev, [name]: !enabled }));
+    });
+  }, []);
+
+  const anyPlatformEnabled = Object.values(platformEnabled).some(Boolean);
+
   // Tick every second so "Updated Xs ago" counts up live
   useEffect(() => { setMounted(true); }, []);
 
@@ -141,6 +178,9 @@ export function DashboardClient({ initialData }: Props) {
   // --- Run Scan: fire POST /refresh; backend returns 202 immediately, polling delivers results ---
   const runScan = useCallback(() => {
     if (scanning || backendRefreshing) return;
+    // Belt-and-suspenders: even if the form is somehow submitted while no
+    // book is enabled, do not fire a refresh.
+    if (!Object.values(platformEnabled).some(Boolean)) return;
     setScanning(true);
     pollIntervalRef.current = 2_000;
     refreshOpportunities().catch(() => {
@@ -148,7 +188,7 @@ export function DashboardClient({ initialData }: Props) {
       // polling will retry. last_refresh_error stays driven by backend status.
       setScanning(false);
     });
-  }, [scanning, backendRefreshing]);
+  }, [scanning, backendRefreshing, platformEnabled]);
 
   // --- Cold-start auto-refresh: fire exactly once when the first /status
   //     response shows no snapshot and no refresh in flight ---
@@ -196,6 +236,9 @@ export function DashboardClient({ initialData }: Props) {
     const searchLower = filterSearch.toLowerCase().trim();
 
     return allOpps.filter((o) => {
+      // Books toggles — hide rows from disabled platforms immediately, even
+      // if they're still in the snapshot from a previous scan.
+      if (platformEnabled[o.platform] === false) return false;
       if (filterStatus !== "all" && o.status !== filterStatus) return false;
       if (filterPlatform !== "all" && o.platform !== filterPlatform) return false;
       if (filterSport !== "all" && o.sport !== filterSport) return false;
@@ -206,7 +249,7 @@ export function DashboardClient({ initialData }: Props) {
       if (searchLower && !o.event.toLowerCase().includes(searchLower) && !o.side.toLowerCase().includes(searchLower)) return false;
       return true;
     });
-  }, [allOpps, filterStatus, filterPlatform, filterSport, filterMarketType, filterSearch, edgeInput]);
+  }, [allOpps, filterStatus, filterPlatform, filterSport, filterMarketType, filterSearch, edgeInput, platformEnabled]);
 
   const activeFilterCount = [
     filterStatus !== "all",
@@ -286,14 +329,43 @@ export function DashboardClient({ initialData }: Props) {
             </div>
           </div>
 
+          <div className="h-3.5 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
+
+          {/* Books / platform toggles */}
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[9px]" style={{ color: "#4b5563" }}>Books</span>
+            {Object.keys(platformEnabled).length > 0 ? (
+              Object.keys(platformEnabled)
+                .sort()
+                .map((name) => (
+                  <label
+                    key={name}
+                    className="flex items-center gap-1 font-mono text-[10px] cursor-pointer select-none"
+                    style={{ color: platformEnabled[name] ? "#e2e8f0" : "#4b5563" }}
+                    title={`Toggle ${platformLabels[name] ?? name} scanning`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!platformEnabled[name]}
+                      onChange={(e) => togglePlatform(name, e.target.checked)}
+                      className="cursor-pointer"
+                      style={{ accentColor: "#2dd4bf" }}
+                    />
+                    {platformLabels[name] ?? name}
+                  </label>
+                ))
+            ) : null}
+          </div>
+
           <button
             type="submit"
-            disabled={scanning}
+            disabled={scanning || !anyPlatformEnabled}
+            title={!anyPlatformEnabled ? "Enable at least one book to scan" : undefined}
             className="px-4 py-1 rounded-md border font-mono text-[10px] tracking-wider uppercase transition-all duration-150"
             style={{
-              color: scanning ? "#374151" : "#2dd4bf",
-              background: scanning ? "rgba(75,85,99,0.05)" : "rgba(45,212,191,0.06)",
-              borderColor: scanning ? "rgba(75,85,99,0.15)" : "rgba(45,212,191,0.2)",
+              color: (scanning || !anyPlatformEnabled) ? "#374151" : "#2dd4bf",
+              background: (scanning || !anyPlatformEnabled) ? "rgba(75,85,99,0.05)" : "rgba(45,212,191,0.06)",
+              borderColor: (scanning || !anyPlatformEnabled) ? "rgba(75,85,99,0.15)" : "rgba(45,212,191,0.2)",
             }}
           >
             {scanning ? "Scanning..." : "Scan"}
@@ -534,6 +606,10 @@ export function DashboardClient({ initialData }: Props) {
                 </p>
               )}
             </>
+          ) : !anyPlatformEnabled ? (
+            <p className="font-mono text-[10px]" style={{ color: "#f87171" }}>
+              Enable at least one book (Kalshi or Polymarket) above to scan.
+            </p>
           ) : (
             <p className="font-mono text-[10px]" style={{ color: "#374151" }}>
               Click <strong style={{ color: "#2dd4bf" }}>Scan</strong> above to trigger the first refresh.
