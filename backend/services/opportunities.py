@@ -395,13 +395,15 @@ async def fetch_opportunities(
         parts = " ".join(f"{k}={v}" for k, v in sorted(_alt_actionable.items()))
         logger.info("[alt-demand] actionable: %s total=%d", parts, sum(_alt_actionable.values()))
 
+    # --- Series dedup FIRST: when multiple FD events match the same platform
+    #     market, keep only the closest-date match to prevent cross-game
+    #     mismatches in multi-game series (MLB 3-game, NBA back-to-back, ...).
+    #     Must run BEFORE ambiguity enrichment so competing_matches reflects
+    #     the actual surviving candidate set, not the pre-dedup raw count. ---
+    all_features = _dedup_to_best_date_match(all_features)
+
     # --- Ambiguity enrichment (between Pass A and B) ---
     _enrich_ambiguity_metrics(all_features)
-
-    # --- Series dedup: when multiple FD events match the same PM market,
-    #     keep only the closest-date match to prevent cross-game mismatches
-    #     in multi-game series (MLB 3-game, NBA back-to-back, etc.) ---
-    all_features = _dedup_to_best_date_match(all_features)
 
     # --- Pass B: Rule Engine ---
     all_evaluated: list[EvaluatedOpportunity] = []
