@@ -295,26 +295,21 @@ def _edge_plausible(f: MarketFeatures, c: EngineConfig) -> bool:
     """
     Pass if the edge is within a plausible range for this sport.
 
-    Uses sport-specific max_plausible_edge from SportConfig when available,
-    falls back to the global EngineConfig.max_plausible_edge.
+    Uses sport-specific max_plausible_edge from SportConfig when an exact
+    match exists for the FD odds_api key.  Falls back to the global
+    EngineConfig.max_plausible_edge when no config matches.
+
+    Uses the same exact mapping as _date_not_stale (config_for_odds_key)
+    so sibling sports (basketball_wnba vs basketball_nba, baseball_kbo vs
+    baseball_mlb) cannot accidentally inherit each other's caps via prefix
+    matching.
     """
     if f.edge <= 0:
         return True  # no edge — nothing to check
 
-    # Look up sport-specific limit
-    from services.sports_config import SPORTS
-    limit = c.max_plausible_edge  # global fallback
-    for sport_key, sc in SPORTS.items():
-        # Match by prefix: f.sport is an Odds API key like "baseball_mlb" or
-        # "tennis_atp_french_open"; sport_key is "baseball_mlb" or "tennis"
-        if f.sport.startswith(sport_key) or sport_key.startswith(f.sport.split("_")[0]):
-            limit = sc.max_plausible_edge
-            break
-        # Also check explicit odds_api_keys
-        if f.sport in sc.odds_api_keys:
-            limit = sc.max_plausible_edge
-            break
-
+    from services.sports_config import config_for_odds_key
+    sc = config_for_odds_key(f.sport)
+    limit = sc.max_plausible_edge if sc else c.max_plausible_edge
     return f.edge <= limit
 
 

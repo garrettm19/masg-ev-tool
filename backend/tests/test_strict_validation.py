@@ -378,6 +378,60 @@ class TestEdgePlausible:
         status, _ = evaluate_rules(f, _cfg())
         assert "EDGE_IMPLAUSIBLE" not in f.downgrade_reasons
 
+    # ---- Sibling-sport regressions: prefix-match used to apply NBA/MLB
+    #      caps to WNBA/KBO. config_for_odds_key now resolves exactly. ----
+
+    def test_wnba_uses_own_cap_not_nba(self):
+        """WNBA cap is 0.15, NBA cap is 0.12. Edge 0.13 must pass under WNBA's
+        own limit (would have wrongly DOWNGRADED under prefix matching that
+        applied NBA's tighter 0.12 cap)."""
+        f = _buy_ready(edge=0.13, sport="basketball_wnba")
+        status, _ = evaluate_rules(f, _cfg())
+        assert "EDGE_IMPLAUSIBLE" not in f.downgrade_reasons
+
+    def test_wnba_above_own_cap_downgrades(self):
+        """WNBA at 0.16 → DOWNGRADE (above own 0.15 limit)."""
+        f = _buy_ready(edge=0.16, sport="basketball_wnba")
+        status, _ = evaluate_rules(f, _cfg())
+        assert "EDGE_IMPLAUSIBLE" in f.downgrade_reasons
+
+    def test_kbo_uses_own_cap_not_mlb(self):
+        """KBO cap is 0.20, MLB cap is 0.15. Edge 0.18 must pass under KBO's
+        own limit (would have wrongly DOWNGRADED under prefix matching that
+        applied MLB's 0.15 cap)."""
+        f = _buy_ready(edge=0.18, sport="baseball_kbo")
+        status, _ = evaluate_rules(f, _cfg())
+        assert "EDGE_IMPLAUSIBLE" not in f.downgrade_reasons
+
+    def test_kbo_above_own_cap_downgrades(self):
+        """KBO at 0.21 → DOWNGRADE (above own 0.20 limit)."""
+        f = _buy_ready(edge=0.21, sport="baseball_kbo")
+        status, _ = evaluate_rules(f, _cfg())
+        assert "EDGE_IMPLAUSIBLE" in f.downgrade_reasons
+
+    def test_nba_still_uses_own_cap(self):
+        """Regression: switching to exact lookup must not break the NBA case
+        that was already correct under prefix matching."""
+        # Exactly at NBA's 0.12 cap → passes
+        f_at = _buy_ready(edge=0.12, sport="basketball_nba")
+        evaluate_rules(f_at, _cfg())
+        assert "EDGE_IMPLAUSIBLE" not in f_at.downgrade_reasons
+        # Just above → downgrades
+        f_over = _buy_ready(edge=0.121, sport="basketball_nba")
+        evaluate_rules(f_over, _cfg())
+        assert "EDGE_IMPLAUSIBLE" in f_over.downgrade_reasons
+
+    def test_unknown_sport_falls_back_to_engine_config(self):
+        """Sport key not in any SportConfig → uses EngineConfig.max_plausible_edge (0.20)."""
+        # Just under global 0.20 → passes
+        f_pass = _buy_ready(edge=0.199, sport="completely_made_up_sport")
+        evaluate_rules(f_pass, _cfg())
+        assert "EDGE_IMPLAUSIBLE" not in f_pass.downgrade_reasons
+        # Above global 0.20 → downgrades
+        f_fail = _buy_ready(edge=0.21, sport="completely_made_up_sport")
+        evaluate_rules(f_fail, _cfg())
+        assert "EDGE_IMPLAUSIBLE" in f_fail.downgrade_reasons
+
 
 # ---------------------------------------------------------------------------
 # Combined scenarios
