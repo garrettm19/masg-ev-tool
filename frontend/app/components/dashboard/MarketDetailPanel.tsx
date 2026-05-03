@@ -2,6 +2,12 @@
 
 import { Opportunity } from "@/lib/types";
 import { sportLabel, SportRegistryEntry } from "@/lib/sport-labels";
+import { Card } from "../ui/Card";
+import { StatusPill, type StatusPillTone, type StatusPillVariant } from "../ui/StatusPill";
+import { Badge, type BadgeVariant } from "../ui/Badge";
+import { Button } from "../ui/Button";
+import { EmptyState } from "../ui/EmptyState";
+import type { CSSProperties } from "react";
 
 interface Props {
   opportunity?: Opportunity | null;
@@ -11,43 +17,43 @@ interface Props {
   sportsRegistry?: Record<string, SportRegistryEntry>;
 }
 
-function Row({ label, value, valueColor = "#94a3b8" }: {
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function Row({
+  label,
+  value,
+  valueColor = "var(--fg-secondary)",
+}: {
   label: string;
   value: string;
   valueColor?: string;
 }) {
   return (
     <div className="flex items-center justify-between py-1.5">
-      <span className="font-mono text-[10px]" style={{ color: "#4b5563" }}>{label}</span>
-      <span className="font-mono text-[11px] font-medium" style={{ color: valueColor }}>{value}</span>
+      <span className="font-mono" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>
+        {label}
+      </span>
+      <span
+        className="font-mono font-medium"
+        style={{ fontSize: "11px", color: valueColor }}
+      >
+        {value}
+      </span>
     </div>
   );
 }
 
 function Section({ children }: { children: string }) {
   return (
-    <p className="font-mono text-[9px] tracking-[0.12em] uppercase pt-4 pb-1.5 font-medium" style={{ color: "#2dd4bf", opacity: 0.6 }}>
+    <p
+      className="font-mono uppercase tracking-[0.12em] pt-4 pb-1.5 font-medium"
+      style={{ fontSize: "9px", color: "var(--accent)", opacity: 0.6 }}
+    >
       {children}
     </p>
   );
-}
-
-function Badge({ label, color }: { label: string; color: string }) {
-  return (
-    <span
-      className="font-mono text-[8px] tracking-wider px-1.5 py-0.5 rounded-md border uppercase"
-      style={{ color, background: `${color}10`, borderColor: `${color}30` }}
-    >
-      {label}
-    </span>
-  );
-}
-
-function edgeColor(edge: number): string {
-  if (edge >= 0.10) return "#2dd4bf";
-  if (edge >= 0.05) return "#67e8f9";
-  if (edge >= 0.02) return "#a7f3d0";
-  return "#94a3b8";
 }
 
 function fmtOdds(n: number): string {
@@ -63,8 +69,6 @@ function fmtTime(iso: string): string {
   return `${months[d.getMonth()]} ${d.getDate()}, ${hh}:${mm} local`;
 }
 
-// sportLabel imported from @/lib/sport-labels
-
 function platformLabel(p: string): string {
   if (p === "polymarket") return "Polymarket";
   if (p === "kalshi") return "Kalshi";
@@ -72,122 +76,403 @@ function platformLabel(p: string): string {
 }
 
 function platformColor(p: string): string {
-  if (p === "polymarket") return "#a78bfa";
-  if (p === "kalshi") return "#38bdf8";
-  return "#94a3b8";
+  if (p === "polymarket") return "var(--platform-polymarket)";
+  if (p === "kalshi") return "var(--platform-kalshi)";
+  return "var(--fg-secondary)";
+}
+
+function edgeColor(edge: number): string {
+  if (edge >= 0.10) return "var(--edge-elite)";
+  if (edge >= 0.05) return "var(--edge-strong)";
+  if (edge >= 0.02) return "var(--edge-soft)";
+  return "var(--edge-mute)";
 }
 
 const MARKET_TYPE_LABEL: Record<string, string> = {
-  h2h: "Moneyline H2H", handicap: "Handicap", totals: "Totals", first_set: "First Set", unknown: "Unknown",
+  h2h: "Moneyline H2H",
+  handicap: "Handicap",
+  totals: "Totals",
+  first_set: "First Set",
+  unknown: "Unknown",
 };
 
-const FD_CONF_COLOR: Record<string, string> = { High: "#2dd4bf", Medium: "#f59e0b", Low: "#4b5563" };
-const LW_COLOR: Record<string, string> = { Tight: "#2dd4bf", Moderate: "#f59e0b", Wide: "#4b5563" };
-const STATUS_COLOR: Record<string, string> = { BUY: "#2dd4bf", WATCH: "#38bdf8", SKIP: "#4b5563" };
+interface StatusTone {
+  tone: StatusPillTone;
+  variant: StatusPillVariant;
+  title: string;
+}
 
-export function MarketDetailPanel({ opportunity: opp, bankroll = 1000, isTaken = false, onTake, sportsRegistry }: Props) {
-  if (!opp) {
-    return (
-      <div
-        className="rounded-lg border flex flex-col"
-        style={{ background: "#0c1315", borderColor: "rgba(19,78,74,0.35)" }}
-      >
-        <div className="px-4 py-2.5 border-b" style={{ borderColor: "rgba(19,78,74,0.25)" }}>
-          <span className="font-mono text-[10px] tracking-[0.12em] uppercase font-medium" style={{ color: "#2dd4bf", opacity: 0.5 }}>
-            Details
-          </span>
-        </div>
-        <div className="flex flex-col items-center justify-center flex-1 py-14 gap-2">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.15 }}>
-            <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke="#2dd4bf" strokeWidth="1.5" strokeLinecap="round"/>
-          </svg>
-          <p className="font-mono text-[10px]" style={{ color: "#374151" }}>
-            Select an opportunity to view details
+const STATUS_TONE: Record<string, StatusTone> = {
+  BUY:   { tone: "accent", variant: "solid",  title: "All rules pass — actionable per your criteria" },
+  WATCH: { tone: "info",   variant: "dashed", title: "Watch only — not actionable. A downgrade rule failed." },
+  SKIP:  { tone: "muted",  variant: "solid",  title: "Skipped — a critical rule failed" },
+};
+
+const FD_CONF_VARIANT: Record<string, BadgeVariant> = {
+  High: "success",
+  Medium: "warn",
+  Low: "danger",
+};
+
+const LW_VARIANT: Record<string, BadgeVariant> = {
+  Tight: "success",
+  Moderate: "warn",
+  Wide: "danger",
+};
+
+const LW_COLOR_VAR: Record<string, string> = {
+  Tight: "var(--success)",
+  Moderate: "var(--warn-strong)",
+  Wide: "var(--danger-strong)",
+};
+
+// ---------------------------------------------------------------------------
+// Hero — status, edge, bet size, side. Fixed at the top of the panel so the
+// most decision-relevant numbers don't get lost in the reference grid below.
+// ---------------------------------------------------------------------------
+
+function HeroSection({ opp, bankroll }: { opp: Opportunity; bankroll: number }) {
+  const ss = STATUS_TONE[opp.status] ?? STATUS_TONE.SKIP;
+  const eColor = edgeColor(opp.edge);
+  const hasKelly = opp.recommended_kelly > 0;
+
+  return (
+    <div className="px-4 pt-4 pb-4 border-b" style={{ borderColor: "var(--border-subtle)" }}>
+      {/* Event title + status pill */}
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="min-w-0 flex-1">
+          <p
+            className="font-mono leading-snug font-medium"
+            style={{ fontSize: "13px", color: "var(--fg-primary)" }}
+          >
+            {opp.event}
+          </p>
+          <p
+            className="font-mono mt-1"
+            style={{ fontSize: "9px", color: "var(--fg-faint)" }}
+          >
+            {opp.tournament} · {fmtTime(opp.start_time)}
           </p>
         </div>
+        <StatusPill
+          value={opp.status}
+          tone={ss.tone}
+          variant={ss.variant}
+          size="md"
+          showDot={false}
+          title={ss.title}
+        />
       </div>
+
+      {/* Edge + Bet size (dominant numbers) */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <p
+            className="font-mono uppercase tracking-[0.15em]"
+            style={{ fontSize: "8px", color: "var(--fg-faint)" }}
+          >
+            Edge
+          </p>
+          <p
+            className="font-mono font-bold"
+            style={{
+              fontSize: "28px",
+              color: eColor,
+              lineHeight: 1.1,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            +{(opp.edge * 100).toFixed(2)}%
+          </p>
+          <p
+            className="font-mono"
+            style={{ fontSize: "9px", color: "var(--fg-muted)" }}
+          >
+            {(opp.p_true * 100).toFixed(1)}% true / {(opp.pm_price * 100).toFixed(1)}c entry
+          </p>
+        </div>
+        <div className="text-right">
+          <p
+            className="font-mono uppercase tracking-[0.15em]"
+            style={{ fontSize: "8px", color: "var(--fg-faint)" }}
+          >
+            Bet Size
+          </p>
+          <p
+            className="font-mono font-bold"
+            style={{
+              fontSize: "20px",
+              color: hasKelly ? "var(--fg-primary)" : "var(--fg-ghost)",
+              lineHeight: 1.2,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {hasKelly
+              ? `$${Math.round(bankroll * opp.recommended_kelly).toLocaleString()}`
+              : "—"}
+          </p>
+          {hasKelly && (
+            <p className="font-mono" style={{ fontSize: "9px", color: "var(--info)" }}>
+              {(opp.recommended_kelly * 100).toFixed(2)}% Kelly
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Side + WATCH/SKIP rationale strip */}
+      <div
+        className="mt-3 pt-3 flex items-center justify-between gap-2 flex-wrap"
+        style={{ borderTop: "1px dashed var(--border-subtle)" }}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className="font-mono uppercase tracking-[0.15em]"
+            style={{ fontSize: "8px", color: "var(--fg-faint)" }}
+          >
+            Side
+          </span>
+          <span
+            className="font-mono font-medium"
+            style={{ fontSize: "12px", color: "var(--fg-primary)" }}
+          >
+            {opp.side}
+          </span>
+          {opp.line != null && (
+            <span
+              className="font-mono"
+              style={{ fontSize: "10px", color: "var(--fg-muted)" }}
+            >
+              ({opp.line > 0 ? `+${opp.line}` : opp.line})
+            </span>
+          )}
+        </div>
+        {opp.status === "WATCH" && (
+          <span
+            className="font-mono italic"
+            style={{ fontSize: "9px", color: "var(--info)" }}
+          >
+            Watch only — a downgrade rule failed.
+          </span>
+        )}
+        {opp.status === "SKIP" && (
+          <span
+            className="font-mono italic"
+            style={{ fontSize: "9px", color: "var(--danger-strong)" }}
+          >
+            Skipped — a critical rule failed.
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rule trace — surfaces reject_reasons and downgrade_reasons that drive
+// SKIP / WATCH classifications. Hidden when both arrays are empty (BUY).
+// ---------------------------------------------------------------------------
+
+function RuleTraceSection({ opp }: { opp: Opportunity }) {
+  const rejects = opp.reject_reasons ?? [];
+  const downgrades = opp.downgrade_reasons ?? [];
+  if (rejects.length === 0 && downgrades.length === 0) return null;
+
+  return (
+    <>
+      <Section>Rule Trace</Section>
+      <div className="space-y-1.5 pb-1">
+        {rejects.map((r, i) => (
+          <div key={`x-${i}`} className="flex items-start gap-2">
+            <span
+              className="font-mono shrink-0"
+              style={{ fontSize: "10px", color: "var(--danger-strong)", lineHeight: 1.4 }}
+              aria-hidden="true"
+            >
+              ✗
+            </span>
+            <span
+              className="font-mono"
+              style={{ fontSize: "10px", color: "var(--danger-strong)", lineHeight: 1.4 }}
+            >
+              {r}
+            </span>
+          </div>
+        ))}
+        {downgrades.map((r, i) => (
+          <div key={`w-${i}`} className="flex items-start gap-2">
+            <span
+              className="font-mono shrink-0"
+              style={{ fontSize: "10px", color: "var(--warn-strong)", lineHeight: 1.4 }}
+              aria-hidden="true"
+            >
+              ⚠
+            </span>
+            <span
+              className="font-mono"
+              style={{ fontSize: "10px", color: "var(--warn-strong)", lineHeight: 1.4 }}
+            >
+              {r}
+            </span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+interface PlatformLinkVars extends CSSProperties {
+  "--link-hover-bg": string;
+  "--link-hover-border": string;
+}
+
+export function MarketDetailPanel({
+  opportunity: opp,
+  bankroll = 1000,
+  isTaken = false,
+  onTake,
+  sportsRegistry,
+}: Props) {
+  if (!opp) {
+    return (
+      <Card
+        variant="card"
+        padding={false}
+        header={
+          <span
+            className="font-mono uppercase tracking-[0.12em] font-medium"
+            style={{ fontSize: "10px", color: "var(--accent)", opacity: 0.5 }}
+          >
+            Details
+          </span>
+        }
+      >
+        <EmptyState
+          title="Select an opportunity to view details"
+          icon={
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                stroke="var(--accent)"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          }
+        />
+      </Card>
     );
   }
 
   const typeLabel = MARKET_TYPE_LABEL[opp.market_type] ?? opp.market_type;
-  const fdConfColor = FD_CONF_COLOR[opp.fanduel_confidence_label] ?? "#4b5563";
-  const lwColor = LW_COLOR[opp.fanduel_line_width_label] ?? "#4b5563";
-  const statusColor = STATUS_COLOR[opp.status] ?? "#4b5563";
   const pColor = platformColor(opp.platform);
+  const lwColor = LW_COLOR_VAR[opp.fanduel_line_width_label] ?? "var(--fg-faint)";
+
+  const linkStyle: PlatformLinkVars = {
+    color: pColor,
+    background: `color-mix(in oklab, ${pColor} 8%, transparent)`,
+    borderColor: `color-mix(in oklab, ${pColor} 25%, transparent)`,
+    "--link-hover-bg": `color-mix(in oklab, ${pColor} 18%, transparent)`,
+    "--link-hover-border": `color-mix(in oklab, ${pColor} 50%, transparent)`,
+  };
 
   return (
-    <div
-      className="rounded-lg border flex flex-col"
-      style={{ background: "#0c1315", borderColor: "rgba(19,78,74,0.35)" }}
-    >
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b" style={{ borderColor: "rgba(19,78,74,0.25)" }}>
-        <span className="font-mono text-[10px] tracking-[0.12em] uppercase font-medium" style={{ color: "#2dd4bf", opacity: 0.7 }}>
+    <Card
+      variant="card"
+      padding={false}
+      className="flex flex-col"
+      header={
+        <span
+          className="font-mono uppercase tracking-[0.12em] font-medium"
+          style={{ fontSize: "10px", color: "var(--accent)", opacity: 0.7 }}
+        >
           Details
         </span>
-        <div className="flex items-center gap-1.5">
-          <Badge label={platformLabel(opp.platform)} color={pColor} />
-          <Badge label={opp.status} color={statusColor} />
-        </div>
-      </div>
+      }
+      headerRight={<Badge label={platformLabel(opp.platform)} color={pColor} />}
+    >
+      <HeroSection opp={opp} bankroll={bankroll} />
 
       <div className="px-4 pb-4 flex-1 overflow-y-auto">
-        {/* Event header */}
-        <div className="py-3 border-b" style={{ borderColor: "rgba(19,78,74,0.12)" }}>
-          <p className="font-mono text-[12px] leading-snug font-medium" style={{ color: "#e2e8f0" }}>
-            {opp.event}
-          </p>
-          <p className="font-mono text-[9px] mt-1.5" style={{ color: "#4b5563" }}>
-            {opp.tournament} &middot; {fmtTime(opp.start_time)}
-          </p>
-        </div>
-
-        {/* Opportunity */}
-        <Section>Opportunity</Section>
-        <Row label="Side" value={opp.side} valueColor="#e2e8f0" />
-        <Row label="Market Price" value={`${(opp.pm_price * 100).toFixed(1)}c`} />
-        <Row label="True Probability" value={`${(opp.p_true * 100).toFixed(1)}%`} valueColor="#e2e8f0" />
-        <div className="flex items-center justify-between py-2">
-          <span className="font-mono text-[10px]" style={{ color: "#4b5563" }}>Edge</span>
-          <span className="font-mono text-[14px] font-bold" style={{ color: edgeColor(opp.edge) }}>
-            +{(opp.edge * 100).toFixed(2)}%
-          </span>
-        </div>
-        <Row label="Kelly Size" value={opp.recommended_kelly > 0 ? `${(opp.recommended_kelly * 100).toFixed(2)}%` : "--"} valueColor="#38bdf8" />
+        {/* Pricing reference */}
+        <Section>Pricing</Section>
         <Row
-          label="Bet Size"
-          value={opp.recommended_kelly > 0 ? `$${Math.round(bankroll * opp.recommended_kelly).toLocaleString()}` : "--"}
-          valueColor={opp.recommended_kelly > 0 ? "#e2e8f0" : "#374151"}
+          label="Market Price"
+          value={`${(opp.pm_price * 100).toFixed(1)}c`}
+        />
+        <Row
+          label="True Probability"
+          value={`${(opp.p_true * 100).toFixed(1)}%`}
+          valueColor="var(--fg-primary)"
         />
 
-        {/* FanDuel Reference */}
+        {/* FanDuel reference */}
         <Section>FanDuel Reference</Section>
         <Row label="Odds" value={fmtOdds(opp.fd_odds)} />
-        <Row label="Overround" value={`${(opp.fanduel_overround * 100).toFixed(1)}%`} valueColor="#6b7280" />
+        <Row
+          label="Overround"
+          value={`${(opp.fanduel_overround * 100).toFixed(1)}%`}
+          valueColor="var(--fg-muted)"
+        />
         <div className="flex items-center justify-between py-1.5">
-          <span className="font-mono text-[10px]" style={{ color: "#4b5563" }}>Line Width</span>
+          <span className="font-mono" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>
+            Line Width
+          </span>
           <div className="flex items-center gap-1.5">
-            <span className="font-mono text-[10px]" style={{ color: lwColor }}>{(opp.fanduel_line_width * 100).toFixed(0)}%</span>
-            <Badge label={opp.fanduel_line_width_label} color={lwColor} />
+            <span
+              className="font-mono"
+              style={{ fontSize: "10px", color: lwColor }}
+            >
+              {(opp.fanduel_line_width * 100).toFixed(0)}%
+            </span>
+            <Badge
+              label={opp.fanduel_line_width_label}
+              variant={LW_VARIANT[opp.fanduel_line_width_label] ?? "platform"}
+            />
           </div>
         </div>
         <div className="flex items-center justify-between py-1.5">
-          <span className="font-mono text-[10px]" style={{ color: "#4b5563" }}>Confidence</span>
-          <Badge label={opp.fanduel_confidence_label} color={fdConfColor} />
-        </div>
-
-        {/* Match Quality */}
-        <Section>Match Quality</Section>
-        <Row label="Event Match" value={`${(opp.event_match_confidence * 100).toFixed(0)}%`} valueColor={opp.event_match_confidence >= 0.90 ? "#2dd4bf" : "#6b7280"} />
-        <Row label="Type" value={typeLabel} valueColor="#38bdf8" />
-        <Row label="Sport" value={sportLabel(opp.sport, sportsRegistry)} valueColor="#67e8f9" />
-        <div className="flex items-center justify-between py-1.5">
-          <span className="font-mono text-[10px]" style={{ color: "#4b5563" }}>Match Quality</span>
+          <span className="font-mono" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>
+            Confidence
+          </span>
           <Badge
-            label={opp.match_quality === "verified" ? "Verified" : "Unverified"}
-            color={opp.match_quality === "verified" ? "#2dd4bf" : "#f59e0b"}
+            label={opp.fanduel_confidence_label}
+            variant={FD_CONF_VARIANT[opp.fanduel_confidence_label] ?? "platform"}
           />
         </div>
+
+        {/* Match quality */}
+        <Section>Match Quality</Section>
+        <Row
+          label="Event Match"
+          value={`${(opp.event_match_confidence * 100).toFixed(0)}%`}
+          valueColor={
+            opp.event_match_confidence >= 0.9
+              ? "var(--accent)"
+              : "var(--fg-muted)"
+          }
+        />
+        <Row label="Type" value={typeLabel} valueColor="var(--info)" />
+        <Row
+          label="Sport"
+          value={sportLabel(opp.sport, sportsRegistry)}
+          valueColor="var(--platform-fanduel)"
+        />
+        <div className="flex items-center justify-between py-1.5">
+          <span className="font-mono" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>
+            Match Quality
+          </span>
+          <Badge
+            label={opp.match_quality === "verified" ? "Verified" : "Unverified"}
+            variant={opp.match_quality === "verified" ? "success" : "warn"}
+          />
+        </div>
+
+        {/* Rule trace — only renders if any reject/downgrade present */}
+        <RuleTraceSection opp={opp} />
 
         {/* Action */}
         <div className="pt-4 space-y-2">
@@ -196,66 +481,67 @@ export function MarketDetailPanel({ opportunity: opp, bankroll = 1000, isTaken =
               href={opp.event_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-md border font-mono text-[10px] tracking-wider transition-all duration-150"
-              style={{
-                color: pColor,
-                background: `${pColor}08`,
-                borderColor: `${pColor}25`,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = `${pColor}15`;
-                e.currentTarget.style.borderColor = `${pColor}40`;
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = `${pColor}08`;
-                e.currentTarget.style.borderColor = `${pColor}25`;
-              }}
+              className={
+                "flex items-center justify-center gap-2 w-full py-2.5 rounded-md border font-mono tracking-wider transition-colors duration-150 " +
+                "hover:[background:var(--link-hover-bg)] hover:[border-color:var(--link-hover-border)] " +
+                "focus:outline-none focus-visible:[box-shadow:var(--ring-focus)]"
+              }
+              style={{ ...linkStyle, fontSize: "10px", borderRadius: "var(--radius-md)" }}
             >
               View on {platformLabel(opp.platform)}
               <svg width="9" height="9" viewBox="0 0 10 10" fill="none" style={{ opacity: 0.7 }}>
-                <path d="M1 9L9 1M9 1H3M9 1V7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path
+                  d="M1 9L9 1M9 1H3M9 1V7"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
               </svg>
             </a>
           ) : (
             <div
-              className="flex items-center justify-center w-full py-2.5 rounded-md border font-mono text-[10px]"
-              style={{ color: "#374151", background: "rgba(75,85,99,0.04)", borderColor: "rgba(75,85,99,0.15)" }}
+              className="flex items-center justify-center w-full py-2.5 rounded-md border font-mono"
+              style={{
+                fontSize: "10px",
+                color: "var(--fg-ghost)",
+                background: "rgba(75,85,99,0.04)",
+                borderColor: "rgba(75,85,99,0.15)",
+                borderRadius: "var(--radius-md)",
+              }}
             >
               No link available
             </div>
           )}
 
-          {/* Mark Taken */}
+          {/* Mark Taken — Button primitive (secondary/amber) when actionable.
+              Tracked indicator stays a static chip so it doesn't read as a
+              dismissible button. */}
           {isTaken ? (
             <div
-              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-md border font-mono text-[10px]"
-              style={{ color: "#f59e0b", background: "rgba(245,158,11,0.06)", borderColor: "rgba(245,158,11,0.2)" }}
+              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-md border font-mono"
+              style={{
+                fontSize: "10px",
+                color: "var(--warn)",
+                background: "var(--warn-soft)",
+                borderColor: "var(--warn-border)",
+                borderRadius: "var(--radius-md)",
+              }}
             >
               Position Tracked
             </div>
           ) : (
-            <button
+            <Button
+              variant="secondary"
+              size="md"
               onClick={onTake}
-              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-md border font-mono text-[10px] tracking-wider uppercase transition-all duration-150"
-              style={{
-                color: "#f59e0b",
-                background: "rgba(245,158,11,0.04)",
-                borderColor: "rgba(245,158,11,0.2)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "rgba(245,158,11,0.12)";
-                e.currentTarget.style.borderColor = "rgba(245,158,11,0.35)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(245,158,11,0.04)";
-                e.currentTarget.style.borderColor = "rgba(245,158,11,0.2)";
-              }}
+              className="w-full"
             >
               Mark Taken
-            </button>
+            </Button>
           )}
         </div>
       </div>
-    </div>
+    </Card>
   );
 }
