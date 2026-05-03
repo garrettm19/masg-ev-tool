@@ -3,76 +3,19 @@
 import type { CSSProperties } from "react";
 import { Opportunity } from "@/lib/types";
 import { sportLabel, marketTypeLabel, isPropType, SportRegistryEntry } from "@/lib/sport-labels";
+import {
+  fmtPct,
+  fmtAge,
+  ageColor,
+  fmtOdds,
+  fmtTime,
+  platformLabel,
+  platformColor,
+  edgeColor,
+  STATUS_TONE,
+} from "@/lib/opportunity-format";
 import { Badge } from "../ui/Badge";
-import { StatusPill, type StatusPillTone, type StatusPillVariant } from "../ui/StatusPill";
-
-// ---------------------------------------------------------------------------
-// Row-local formatting + color helpers
-// ---------------------------------------------------------------------------
-
-function fmtPct(n: number, dec = 1): string {
-  return `${(n * 100).toFixed(dec)}%`;
-}
-
-function fmtAge(fetchedAt: number, nowSec: number): string {
-  if (!fetchedAt || !nowSec) return "?";
-  const sec = Math.max(0, Math.floor(nowSec - fetchedAt));
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
-  return `${Math.floor(sec / 3600)}h`;
-}
-
-function ageColor(fetchedAt: number, nowSec: number): string {
-  if (!fetchedAt || !nowSec) return "var(--fg-faint)";
-  const sec = nowSec - fetchedAt;
-  if (sec < 300) return "var(--accent)";       // < 5min — fresh
-  if (sec < 900) return "var(--warn-strong)";  // < 15min — getting stale
-  return "var(--danger-strong)";               // > 15min — stale
-}
-
-function fmtOdds(n: number): string {
-  return n > 0 ? `+${n}` : `${n}`;
-}
-
-function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso.slice(0, 10);
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${months[d.getMonth()]} ${d.getDate()}, ${hh}:${mm}`;
-}
-
-function platformLabel(p: string): string {
-  if (p === "polymarket") return "Polymarket";
-  if (p === "kalshi") return "Kalshi";
-  return p.charAt(0).toUpperCase() + p.slice(1);
-}
-
-function platformColor(p: string): string {
-  if (p === "polymarket") return "var(--platform-polymarket)";
-  if (p === "kalshi") return "var(--platform-kalshi)";
-  return "var(--fg-secondary)";
-}
-
-function edgeColor(edge: number): string {
-  if (edge >= 0.10) return "var(--edge-elite)";
-  if (edge >= 0.05) return "var(--edge-strong)";
-  if (edge >= 0.02) return "var(--edge-soft)";
-  return "var(--edge-mute)";
-}
-
-interface StatusToneSpec {
-  tone: StatusPillTone;
-  variant: StatusPillVariant;
-  title: string;
-}
-
-const STATUS_TONE: Record<string, StatusToneSpec> = {
-  BUY:   { tone: "accent", variant: "solid",  title: "All rules pass — actionable per your criteria" },
-  WATCH: { tone: "info",   variant: "dashed", title: "Watch only — not actionable. A downgrade rule failed." },
-  SKIP:  { tone: "muted",  variant: "solid",  title: "Skipped — a critical rule failed" },
-};
+import { StatusPill } from "../ui/StatusPill";
 
 // Hover tints applied via per-row CSS custom properties so the row's
 // hover/focus styles stay in CSS (no React mouseenter handlers).
