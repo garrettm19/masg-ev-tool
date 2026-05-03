@@ -4,8 +4,20 @@
 > and deciding whether to act on a BUY. Companion to `README.md` (setup),
 > `CLAUDE.md` (project rules), and `PROJECT_CONTEXT.md` (architecture).
 >
-> **Live alerts remain disabled.** Dry-run only until further validation.
-> See section 9.
+> **Validated operating state (current default):**
+> - **Books**: Kalshi ON, Polymarket OFF. Polymarket is opt-in only via the
+>   dashboard "Books" toggles or `POST /api/scan/config`. Default scans never
+>   call the Polymarket adapter — no Gamma fetch, no CLOB calls.
+> - **Alerts**: Monitor scheduler is OFF by default. When started, defaults
+>   to `dry_run=true` and `MonitorConfig.platforms=["kalshi"]`.
+> - **Pushover end-to-end**: verified — `POST /api/monitor/test` was sent
+>   successfully. Credentials and notification delivery confirmed working.
+> - **Live alerts**: still off until a real dry-run BUY payload is observed.
+>   See section 9 — `POST /api/monitor/test` is the ONLY real-Pushover send
+>   that should happen until that checkpoint passes.
+> - **Soccer missing draw odds**: feature extractor SKIPs candidates as
+>   `NO_BOOKMAKER_DATA` to prevent 2-way-devig phantom EV.
+> - **Player props**: disabled (`enable_props=False`).
 
 ---
 
@@ -58,11 +70,29 @@ Without `ODDS_API_KEY`, the pipeline fails with 503 because there is no FanDuel 
 
 Two paths.
 
+### Books toggles (Kalshi / Polymarket)
+The toolbar exposes a **Books** control with one checkbox per platform.
+Defaults read from `GET /api/scan/config`:
+- **Kalshi: ON**
+- **Polymarket: OFF**
+
+Toggling a checkbox optimistically updates the UI, posts to
+`POST /api/scan/config` with `{"platforms": {"<name>": {"enabled": <bool>}}}`,
+and immediately filters out the disabled platform's rows from the table.
+The next Scan respects the new state — disabled platforms are not fetched
+at all (no API calls). Disabling both books greys out the Scan button with
+a tooltip; the cold-start panel shows "Enable at least one book…".
+
+Polymarket is opt-in: enable it only when you specifically want CLOB-priced
+Polymarket opportunities for that session. Re-disable when done so future
+scans default back to Kalshi-only.
+
 ### From the dashboard (preferred)
 1. Open http://localhost:3000.
-2. Click **Scan** in the toolbar (top-right). The button switches to "Scanning..." and the dashboard polls `/api/opportunities/status` every 2 seconds while waiting.
-3. Wait 5–30 seconds depending on cache state.
-4. When the snapshot lands, the toolbar status switches to "Updated Xs ago" and the table populates.
+2. Confirm the Books toggles match what you intend to scan.
+3. Click **Scan** in the toolbar (top-right). The button switches to "Scanning..." and the dashboard polls `/api/opportunities/status` every 2 seconds while waiting. Background refresh started in commit `c4d9035` — POST returns 202 immediately and the scan runs in the background.
+4. Wait 5–60 seconds depending on cache state and which books are enabled (Kalshi-only ≈ 5s; Kalshi + Polymarket ≈ 45s due to CLOB hydration).
+5. When the snapshot lands, the toolbar status switches to "Last updated Xs ago" (local time) and the table populates. The Age column briefly shows "…" while the new snapshot is being applied.
 
 ### From the API directly
 ```bash
@@ -272,32 +302,54 @@ Inspect cache age via `GET /api/scan/config` — it returns the `odds_cache` dic
 
 ---
 
-## 9. Alert status: dry-run only until further validation
+## 9. Alert workflow: Conservative dry-run is the standing default
 
-**Live phone alerts remain disabled.** All alert testing is done with `dry_run=true`, which routes payloads through `DryRunNotifier` and logs them but never POSTs to Pushover.
+**Live phone alerts remain off in regular operation.** The only live Pushover
+sends that have happened are deliberate `POST /api/monitor/test` calls for
+credential verification — those bypass `dry_run` by design and are the
+intended way to confirm the notification path before flipping for real.
 
-### Current state
-After the engine v2 + series-game-fix work:
-- Backend test suite: 642 passed.
-- Real marketplace audit: BUY count dropped from 34 to 4 after the wrong-game fix; remaining BUYs are clean same-day matches.
-- Dry-run alert validation: payload format, deep links, BUY-only filter, cooldown, and rate-limit cap all verified.
+### Current verified state
+- **Pushover credential / network path**: verified end-to-end via
+  `POST /api/monitor/test` → `{"sent": true}`, HTTP 200, log:
+  `Pushover: sent 'MasG EV Tool — Test' (priority=0)`. Phone receipt
+  confirmed.
+- **Conservative dry-run loop**: validated across multi-cycle windows.
+  AlertManager filtering, cooldown, hourly cap, BUY-only gate, ambiguity
+  exclusion, and the soccer missing-draw guard all behave correctly.
+  Phantom MLS alerts are no longer producible.
+- **Defaults aligned**: `MonitorConfig.platforms = ["kalshi"]` mirrors
+  `ScanConfig.platforms` so the alert allowlist cannot drift from the scan
+  layer (commit `31d13b6`).
+- **Backend test suite**: 752 passed (full backend `pytest tests/`).
+- **Soccer phantom-EV class**: structurally blocked. Soccer candidates with
+  `fd.draw_odds=None` SKIP via `NO_BOOKMAKER_DATA` at the feature layer
+  (commit `04e9013`). Both teams of an MLS match cannot both surface BUY.
 
 ### How to dry-run
 ```bash
-# 1. Set safe config (Conservative + dry_run before starting)
+# 1. Set safe config (Conservative + dry_run + Kalshi-only)
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"preset":"conservative","dry_run":true}' \
+  -d '{"preset":"conservative","dry_run":true,"platforms":["kalshi"]}' \
   http://localhost:8000/api/monitor/config
 
-# 2. Start (runs an immediate cycle plus future scheduled cycles)
+# 2. Confirm before starting — explicitly check dry_run is true
+curl -s http://localhost:8000/api/monitor/config | python -m json.tool
+
+# 3. Start (runs an immediate cycle plus future scheduled cycles)
 curl -X POST http://localhost:8000/api/monitor/start
 
-# 3. Inspect
+# 4. Inspect
 curl -s http://localhost:8000/api/monitor/status   | python -m json.tool
 curl -s http://localhost:8000/api/monitor/history  | python -m json.tool
 
-# 4. Stop when done
+# 5. Stop when done
 curl -X POST http://localhost:8000/api/monitor/stop
+
+# 6. Restore safe config (Conservative + dry_run + Kalshi-only + max=5)
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"preset":"conservative","dry_run":true,"platforms":["kalshi"],"max_alerts_per_hour":5}' \
+  http://localhost:8000/api/monitor/config
 ```
 
 Dry-run alerts appear in the uvicorn log as:
@@ -306,18 +358,76 @@ INFO:services.monitor.notifier:[DRY RUN] Would send: ⚡ +10.7% EV — Cleveland
 INFO:services.monitor.manager:AlertManager cycle: 53 evaluated → 2 passed filters → 2 sent (2 new, 0 re) · 0 cooldown · ...
 ```
 
-### What must NOT be done until live alerts are explicitly cleared
-- Do **not** call `POST /api/monitor/test` — that endpoint **bypasses dry_run** and sends a real Pushover. It exists only for credential validation when going live.
-- Do **not** set `dry_run=false` while the monitor is running.
-- Do **not** disable the BUY-only filter, the ambiguity-exclusion filter, or the cooldown.
-- Do **not** raise `max_alerts_per_hour` above 5 while still in Conservative.
+### `POST /api/monitor/test` — IMPORTANT BEHAVIOR
+This endpoint **bypasses `dry_run`** by design and sends a real Pushover
+notification regardless of the current `dry_run` flag. Use it to validate
+credentials and the notification path. It does NOT mutate any state
+(no scheduler start, no config change). Calling it when you don't want a
+real notification on your phone is the only way to misuse it.
 
-### Path to live alerts (for reference, not yet authorized)
-1. ≥ 1 hour of dry-run with a few NEW transitions, looking for false-positive patterns.
-2. Manual spot-check on Polymarket of every dry-run-flagged BUY.
-3. Switch `dry_run=false` while keeping Conservative preset.
-4. Verify the first 1–2 live alerts deliver and that their content matches the dashboard.
-5. Only then consider Standard or relaxing thresholds.
+### What must NOT be done casually
+- Do **not** set `dry_run=false` and start the monitor until at least
+  **one real dry-run BUY payload has been observed in the backend log** —
+  i.e., a `[DRY RUN] Would send: …` line for an organic BUY (not test
+  payload). This confirms the payload format / deep link / Kelly figures
+  on a real candidate before any alert hits your phone autonomously.
+- Do **not** disable the BUY-only filter, the ambiguity-exclusion filter,
+  or the cooldown.
+- Do **not** raise `max_alerts_per_hour` above 5 while still in Conservative.
+- Do **not** enable Polymarket via `MonitorConfig.platforms` without also
+  enabling it in `ScanConfig` (otherwise the alert allowlist accepts a
+  platform that's never scanned — harmless, but indicates drift).
+
+### Path to autonomous live alerts (gated)
+1. Run Conservative dry-run across a Kalshi-active window. Wait for at
+   least one organic BUY payload to surface in the log
+   (`[DRY RUN] Would send: …` for a real opportunity, not test).
+2. Manual spot-check on Kalshi of every flagged BUY's price, FD odds,
+   and game timing — confirm dashboard data matches the platform UI.
+3. Only after step 2 succeeds: `POST /api/monitor/config {"dry_run": false}`
+   while keeping Conservative + Kalshi-only.
+4. Verify the first 1–2 live alerts deliver and content matches the dashboard.
+5. Only then consider Standard preset, Polymarket inclusion, or relaxed
+   thresholds.
+
+### Limited live test pattern (pre-flight + restore)
+For a bounded one-hour real-Pushover window (e.g., to validate the live
+path with a tighter rate cap):
+1. Pre-flight: `running=false`, `enabled=false`,
+   `has_pushover_credentials=true`, `ScanConfig.polymarket.enabled=false`.
+2. Apply `{"preset":"conservative","dry_run":false,"platforms":["kalshi"],
+   "max_alerts_per_hour":2}` to limit blast radius.
+3. `POST /monitor/start` and watch the backend log for `Pushover: sent` /
+   errors / `Monitor cycle […]` lines.
+4. After the window, `POST /monitor/stop` then restore the safe Conservative
+   dry-run config (step 6 of the dry-run procedure above).
+
+### Current safe manual scan checklist
+Before clicking Scan or trusting any BUY, verify each of these holds:
+
+**Operating state**
+- [ ] `GET /api/scan/config` shows `kalshi.enabled=true` and
+      `polymarket.enabled=false` (unless you intentionally enabled
+      Polymarket for this session).
+- [ ] `GET /api/monitor/config` shows `dry_run=true` and `enabled=false`
+      (unless you're inside a deliberate live-test window).
+- [ ] `GET /api/opportunities/status` shows `last_refresh_error=null`
+      after the most recent refresh.
+- [ ] `platforms_fetched` in the snapshot matches what you intended
+      (Kalshi-only by default; both books only if Polymarket was toggled on).
+
+**Snapshot sanity**
+- [ ] No team-sport BUY/WATCH has `date_delta_hours > 12` (per-sport cap).
+- [ ] No exact 0.50¢ Polymarket row that lacks `bid_ask_spread` (CLOB books
+      should populate spread; Gamma 0.5/0.5 stale rows are dropped).
+- [ ] No row with `bid_ask_spread > 0.05` (5¢) on Polymarket (the adapter
+      should reject these).
+- [ ] No soccer BUY with both teams of the same match showing positive EV
+      (the soccer missing-draw guard should make this impossible).
+- [ ] No `EDGE_IMPLAUSIBLE` BUY (DOWNGRADE rule should turn these into
+      WATCH; a BUY past it would indicate sport-cap mislookup regression).
+
+**Per-row before betting** — see section 4's full checklist.
 
 ---
 
@@ -326,14 +436,50 @@ INFO:services.monitor.manager:AlertManager cycle: 53 evaluated → 2 passed filt
 ### Player props are disabled
 - `EngineConfig.enable_props = False` by default.
 - The full prop pipeline (Polymarket prop markets ↔ FanDuel player props) is implemented and tested but gated.
-- Two integration tests previously failed on stale fixtures — those have been fixed (commit `2a51faa`), but enabling props still requires a deliberate rollout per CLAUDE.md ("Do not enable props globally without a specific rollout plan").
 - Action: do not flip `enable_props=True` for ad-hoc testing. Plan first.
+- `fetch_props` does not currently honor `ScanConfig.sports[key].enabled`; tracked as a follow-up to wire up before any rollout.
 
-### Soccer Kalshi normalization gap
-- The data status matrix shows non-zero `raw_count` but zero `event_count` for Kalshi soccer leagues (EPL, La Liga, Bundesliga, Ligue 1, Serie A, MLS, UCL).
-- Kalshi is fetching the markets but the adapter is not emitting `NormalizedMarket` objects for them. Likely cause: 3-way (home/away/draw) detection or subject identification logic in `kalshi.py` not handling some soccer-specific market shape.
-- Effect: zero soccer opportunities from Kalshi today. Polymarket also has no soccer markets at the moment, so soccer is effectively dark.
-- Status: known issue, not yet triaged. Tracked for future work.
+### Soccer requires draw odds for actionable signal
+- Soccer h2h is a 3-way market (home/away/draw). When FanDuel's Odds API
+  returns only home/away (no `Draw` outcome), `feature_extractor.py` SKIPs
+  the candidate via `NO_BOOKMAKER_DATA` rather than 2-way-devigging
+  (which would inflate both teams' p_true by the missing draw mass).
+- Effect: matches without published FD draw odds simply don't appear in
+  BUY/WATCH. They count toward `SKIP` in `status_counts`. This is correct
+  behavior — see the phantom-EV history in `commit 04e9013`.
+- For comparison: tennis, MMA, MLB, NBA, NHL, NFL, etc. are 2-way and
+  unaffected by this guard.
+
+### Polymarket scanning is opt-in
+- ScanConfig defaults to `polymarket.enabled=False`. Default scans never
+  call PolymarketAdapter — no Gamma fetch, no CLOB calls, no Polymarket
+  rows in the snapshot.
+- Enable via the dashboard "Books" toggle or `POST /api/scan/config
+  {"platforms": {"polymarket": {"enabled": true}}}`.
+- When enabled, refresh time grows from ~5s (Kalshi-only) to ~45s due
+  to CLOB book hydration with bounded concurrency (50 in-flight).
+
+### Kalshi 429 rate-limit during long polling windows
+- Observed during the 90-minute live test: Kalshi returns HTTP 429 for
+  some series tickers (KXEPLGAME, KXLIGUE1GAME, KXLALIGAGAME, etc.) when
+  the adapter polls many series in quick succession.
+- The adapter handles this gracefully: per-series error sets
+  `raw_per_series[ticker] = -1`, the rest of the scan proceeds, and
+  `last_refresh_error` stays null. Soft-failure semantics are correct.
+- Effect: occasional gaps in coverage for specific series during peak
+  polling. Tomorrow's scan typically picks up those series cleanly once
+  the rate-limit window resets.
+- Action: nothing. If the issue grows (more 429s, more series affected),
+  consider reducing concurrency or adding per-series exponential backoff.
+
+### Stale alert-state records
+- `backend/data/alert_state.json` accumulates records across sessions.
+  Both live AND dry-run sends increment `alerts_sent_this_hour`, so
+  records from a recent dry-run session can briefly consume the rolling
+  hourly cap budget after switching to live.
+- Self-heals after 60 minutes (records age out of the rolling window).
+- `AlertStateStore.prune_stale(max_age_hours)` exists but is not
+  scheduled to run automatically.
 
 ### Polymarket and Kalshi prices move after the snapshot
 - Snapshot is a frozen-in-time view. PM and Kalshi orderbooks update continuously.

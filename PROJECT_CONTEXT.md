@@ -22,6 +22,18 @@ The owner-operator is the user (Mason / mgarrett620@gmail.com), running it
 locally on Windows 11. There is no deployment, no auth, no multi-tenant
 concern. CORS is locked to `localhost:3000`.
 
+### Current operating defaults
+- **Books**: Kalshi enabled, Polymarket disabled. Polymarket is opt-in via
+  the dashboard "Books" toggles or `POST /api/scan/config`.
+- **Alerts**: monitor scheduler off; defaults to `dry_run=true` and
+  `MonitorConfig.platforms=["kalshi"]` when started.
+- **Player props**: disabled (`enable_props=False`).
+- **Pushover**: credentials configured and end-to-end verified via
+  `POST /api/monitor/test`. Live autonomous alerts gated on observing at
+  least one organic dry-run BUY payload (see runbook section 9).
+- **Soccer missing-draw odds**: SKIPped at the feature layer
+  (`NO_BOOKMAKER_DATA`) to prevent 2-way-devig phantom EV.
+
 ### Core thesis
 - FanDuel sets sharp lines on liquid sports.
 - Polymarket and Kalshi are thinner / less efficient on those same matches.
@@ -616,83 +628,91 @@ to reuse data:
 
 ## 13. Known gaps / things that are stubby / things to clean up
 
-1. **`routers/odds.py` line 235 bug.** The `MatchesResponse` constructor
-   passes `markets_searched=len(markets)`, but the variable in scope is
-   `normalized` (`raw_markets` is the raw list, `normalized` is the parsed
-   list, `markets` doesn't exist). This endpoint will throw `NameError` if
-   called. Either delete the endpoint (it's legacy debug since the system
-   went multi-sport) or fix to `len(normalized)`.
+(Items that have been fixed since the original draft are removed; items
+listed here still apply to current `main` HEAD `04e9013`.)
 
-2. **`routers/odds.py` is legacy.** `/odds/tennis` and `/odds/matches` exist
+1. **`routers/odds.py` is legacy.** `/odds/tennis` and `/odds/matches` exist
    from the tennis-only era. The frontend never calls them; the dashboard
-   uses `/api/opportunities/snapshot`. Decide: keep as a debug surface (and
-   fix the bug) or remove entirely and unregister the router from `main.py`.
+   uses `/api/opportunities/snapshot`. The `NameError` was fixed in commit
+   `c68eca7` but the endpoint remains unused. Decide: keep as a debug
+   surface or remove entirely and unregister the router from `main.py`.
 
-3. **Frontend `lib/api.ts` has `min_edge` etc. params on `fetchOpportunities`,
-   but the backend `GET /opportunities` only accepts `platform` and
-   `include_watch`.** Those tuneable params only work on `/opportunities/debug`.
-   Either expose them on the main endpoint (they currently silently no-op) or
-   strip them from the frontend signature.
-
-4. **`MIN_CONFIDENCE = 0.90` in matcher.py vs `survival_threshold = 0.85` in
+2. **`MIN_CONFIDENCE = 0.90` in matcher.py vs `survival_threshold = 0.85` in
    EngineConfig.** The legacy matcher (`/odds/matches`) uses the 0.90 const.
    The current pipeline uses EngineConfig directly. If the legacy endpoint is
    kept, document the discrepancy or align them.
 
-5. **`enable_props` is OFF by default.** Player props (NBA points/rebounds/etc,
+3. **`enable_props` is OFF by default.** Player props (NBA points/rebounds,
    NFL pass yds, MLB hits) have a complete pipeline (`prop_extractor.py`,
-   `prop_cache.py`, `fetch_props`) but are gated. Turning it on costs Odds API
-   credits and frontend filters already support `isPropType()`, so the gate is
-   just a safety toggle.
+   `prop_cache.py`, `fetch_props`) but are gated. `fetch_props` does not
+   currently honor `ScanConfig.sports[key].enabled` — wire that up before
+   any rollout. Per CLAUDE.md, don't flip `enable_props=True` for ad-hoc
+   testing without a deliberate plan.
 
-6. **`PriceChart.tsx` was deleted** (visible in `git status`) but the
-   `/opportunities/history` endpoint still exists and `useTrackedPositions`
-   still uses it for CLV. If a chart is wanted again, it can be rebuilt
-   against the existing API.
+4. **Polymarket NO-side derivation when book missing**: when the NO token's
+   CLOB book is unavailable, the adapter derives `outcome_prices[1]` as
+   `1 - best_ask` instead of using stale Gamma metadata (commit `ce6f7ce`).
+   This keeps consistency by construction but is a workaround; long-term
+   the WS consumer could maintain a live cache so missing-book scenarios
+   are rare.
 
-7. **Disabled sports with no FanDuel lines** — Cricket IPL, Rugby NRL, Hockey
-   AHL, AFL. They appear in the registry as `enabled=False` but if FanDuel
-   ever starts pricing them, just flip the flag.
+5. **Kalshi 3-way price-history math is still 2-way**:
+   `services/price_history.py:198-201` applies `min(m1_ask, 1.0 - m2_bid)`
+   cross-market arithmetic which is invalid for soccer 3-way markets.
+   Affects CLV backfill only (not live opportunities). Not yet fixed.
 
-8. **No CSRF / no auth** on the backend. Fine for single-user localhost. If
-   anyone ever exposes this beyond localhost, add at minimum:
-   - origin allowlist (currently only `localhost:3000` is permitted in CORS,
-     but POSTs are unguarded otherwise).
+6. **Kalshi 3-way feature semantics for the NO side**: the adapter emits
+   two NormalizedMarkets per soccer event (one per team), each with
+   `outcome_prices[1] = 1 - team_yes_ask`. For a 3-way market the
+   "complement" is "team does not win" = "opponent OR draw", which is not
+   `1 - team_yes`. Only `outcome_prices[0]` (the team's own YES price)
+   is used for pricing, so this is observability-only — but adversarial
+   cases involving the NO side could still surface incorrect labels.
+   Open question, no concrete repro yet.
+
+7. **Disabled sports with no FanDuel lines** — Cricket IPL, Rugby NRL,
+   Hockey AHL, AFL. They appear in the registry as `enabled=False` but
+   if FanDuel ever starts pricing them, just flip the flag.
+
+8. **No CSRF / no auth** on the backend. Fine for single-user localhost.
+   If anyone ever exposes this beyond localhost, add at minimum:
+   - origin allowlist (currently only `localhost:3000` is permitted in
+     CORS, but POSTs are unguarded otherwise).
    - simple bearer auth on the monitor + scan endpoints.
 
-9. **Pushover credentials live in plain `.env`.** Consider Windows DPAPI or a
-   secret manager if the box is shared.
+9. **Pushover credentials live in plain `.env`.** Consider Windows DPAPI
+   or a secret manager if the box is shared.
 
-10. **`AlertStateStore` writes synchronously inside `save()`** on every cycle.
-    For local single-user use this is fine; if the JSON ever gets huge
-    (>100k records), consider rotation or moving to SQLite.
+10. **`AlertStateStore.prune_stale(max_age_hours)` exists but is not
+    scheduled.** Records accumulate; both live and dry-run sends count
+    toward the rolling hourly cap, so dry-run records can briefly consume
+    budget after a switch to live. Self-heals after 60 minutes.
 
 11. **No structured logging.** The codebase uses `logger.info/warning/error`
     with f-strings or %-formatting. If you ever need to grep for an alert
     flow, search for `"AlertManager cycle"`, `"Pass A"`, `"Pass B"`,
-    `"Series dedup"`, `"alt-demand"`, etc.
+    `"Series dedup"`, `"Pushover"`, `"DRY RUN"`, etc.
 
 12. **Rate-limiting on the Odds API** is enforced only via `OddsApiPoller`'s
-    daily rolling window and TTL caches — there is no global counter. If you
-    bypass the poller (e.g., spamming `POST /opportunities/refresh?scope=all`
-    in a loop), you can blow through the monthly quota.
+    daily rolling window and TTL caches — there is no global counter.
+    If you bypass the poller (e.g., spamming `POST /opportunities/refresh?
+    scope=all`), you can blow through the monthly quota.
 
-13. **Modified-but-uncommitted state.** As of 2026-04-30 git status shows
-    all `backend/services/*` files modified, plus most frontend dashboard
-    components, plus a large set of untracked test files. `PriceChart.tsx`
-    is deleted. Two commits exist:
-    - `c5a9c01` MasG EV Tool — initial cross-platform EV scanner.
-    - `55adcef` two-pass rule engine, phone alerts, and monitoring system.
-    Anything before the first commit doesn't exist; current state is a
-    working tree on top of those two commits.
+13. **Kalshi 429 rate-limit during long polling windows.** Observed
+    intermittently across some series tickers (KXEPLGAME, KXLIGUE1GAME,
+    KXLALIGAGAME) during multi-cycle live runs. The adapter handles
+    gracefully (per-series error, pipeline continues, `last_refresh_error`
+    stays null). Tomorrow's scan picks up cleanly. If the issue grows,
+    consider per-series exponential backoff.
 
 14. **`routers/odds.py` import of `fetch_tennis_odds` is still alive** in
-    `odds_provider.py`, so the file works even though it's tennis-only logic.
-    Just don't call it for non-tennis sports.
+    `odds_provider.py`, so the file works even though it's tennis-only
+    logic. Just don't call it for non-tennis sports.
 
 15. **`opportunities.py` has an `_alt_raw` / `_alt_actionable` measurement
-    block** that logs alt-demand counts (totals candidates with no matching
-    FD line). This is logging-only; the data is not surfaced anywhere yet.
+    block** that logs alt-demand counts (totals candidates with no
+    matching FD line). This is logging-only; the data is not surfaced
+    anywhere yet.
 
 ---
 
@@ -738,21 +758,49 @@ Don't, unless intentional. If you must:
 
 - **Backend**: FastAPI app exposing 4 routers under `/api`. CORS for
   localhost:3000 only.
+- **Books default**: `ScanConfig.platforms` defaults to Kalshi enabled,
+  Polymarket disabled (commit `b6c14ee`). Default scans never call
+  `PolymarketAdapter.fetch_markets` — no Gamma fetch, no CLOB calls.
+  Polymarket is opt-in via dashboard "Books" toggles or
+  `POST /api/scan/config {"platforms": {"polymarket": {"enabled": true}}}`.
+- **Refresh**: `POST /api/opportunities/refresh` is non-blocking — returns
+  202 immediately and runs the pipeline in a background asyncio task
+  (commit `c4d9035`). Manual refresh and the scheduler share the same
+  `_refresh_lock` so the expensive pipeline cannot run concurrently
+  (commit `93a00ab`). Status / duration / error metadata is centrally
+  recorded in `services.snapshot` and surfaced via
+  `GET /api/opportunities/status` (`refresh_started_at`, `last_refresh_error`,
+  `last_refresh_duration_seconds`, `last_trigger`).
 - **Frontend**: Single dashboard that polls the snapshot endpoint and shows a
   filtered/sorted table of EV opportunities, with a sidebar detail panel,
   a tracked-positions section, alert configuration, and a per-sport data
-  status matrix.
-- **Monitor**: Off by default. Once started via the dashboard or
-  `POST /monitor/start`, it polls FanDuel every 15 minutes, watches
+  status matrix. Toolbar exposes Books toggles (Kalshi / Polymarket) wired
+  to `POST /api/scan/config`. Default Min Edge filter is 4%. Time columns
+  render in the user's local timezone with explicit "(local)" labels.
+- **Monitor**: Off by default. `MonitorConfig.platforms` defaults to
+  `["kalshi"]` (commit `31d13b6`) so the alert-side allowlist mirrors the
+  scan-side default and cannot drift. Once started via the dashboard or
+  `POST /monitor/start`, it goes through `refresh_snapshot()` for every
+  cycle, polls FanDuel every 15–30 minutes (preset-dependent), watches
   Polymarket and Kalshi WebSockets for price changes, and pushes Pushover
   alerts based on the cooldown/rate-limit/filter rules.
+  - **Pushover**: end-to-end verified via `POST /api/monitor/test` (sends
+    a real notification, bypasses `dry_run` by design). Live alerts are
+    standing OFF until at least one organic dry-run BUY payload is observed.
+  - **Soccer guard**: `feature_extractor.py` SKIPs candidates with
+    `fd.draw_odds=None` on `soccer_*` sport keys via
+    `NO_BOOKMAKER_DATA` (commit `04e9013`). Phantom EV from the
+    2-way-devig fallback class is structurally impossible.
 - **Persistence**: alert_state.json on disk; everything else (caches,
   snapshot) is in-memory and rebuilds on restart.
 - **Cost**: Each `fetch_odds` cycle costs roughly N credits where N is the
   number of (sport_key, market_type) combinations actively being fetched.
   The poller is bounded to 20 polls/day by default, so the worst case is
   ~600 credits/month — slightly over the free tier. Caches usually keep this
-  much lower in practice.
+  much lower in practice. Default scans run faster (~3-10s) when only
+  Kalshi is enabled because there's no Polymarket CLOB hydration.
+- **Tests**: `pytest tests/` reports 752 passed (current `main` HEAD
+  `04e9013`).
 
 ---
 
@@ -785,21 +833,38 @@ Don't, unless intentional. If you must:
 These are real ambiguities you should decide about, not just things that
 weren't read. I flag them so the next conversation can resolve them.
 
-1. **Should `/api/odds/*` be deleted or kept?** It's tennis-only legacy with
-   a known bug. The frontend doesn't call it.
-2. **Should `enable_props` flip to True now?** The pipeline is complete and
-   tested; it's gated for cost and noise control. The user owns this decision.
-3. **Is the README's claim of "20 rules" worth aligning to the actual count?**
-   The README says 20; POLICY_TABLE has 23. Either trim the table or fix the
-   README.
-4. **CLV backfill aggressiveness.** `useTrackedPositions` runs a backfill on
-   every position change. For users with hundreds of tracked positions this
-   could be slow. Currently fine.
-5. **Snapshot lifetime.** Snapshots live until the backend process restarts.
-   For a long-running monitor this is fine, but on restart the first request
-   triggers a cold-start refresh which can take 10–30s.
+1. **Should `/api/odds/*` be deleted or kept?** It's tennis-only legacy.
+   The frontend doesn't call it. Bug fix landed in `c68eca7` but the
+   endpoint is otherwise dormant.
+2. **Should `enable_props` flip to True now?** The pipeline is complete
+   and tested; it's gated for cost and noise control. `fetch_props` also
+   doesn't yet honor `ScanConfig.sports[key].enabled`. The user owns
+   this decision and the rollout plan.
+3. **Live alerts go-live checkpoint.** Pushover end-to-end is verified via
+   `POST /api/monitor/test`. The standing pre-flight before flipping
+   `dry_run=false` autonomously is: observe at least one organic
+   `[DRY RUN] Would send: …` payload in the backend log for a real BUY.
+   Currently no organic BUYs surface under Conservative 8% threshold;
+   wait for a Kalshi-active slate where edges naturally clear that bar.
+4. **CLV backfill aggressiveness.** `useTrackedPositions` runs a backfill
+   on every position change. For users with hundreds of tracked positions
+   this could be slow. Currently fine.
+5. **Snapshot lifetime.** Snapshots live until the backend process
+   restarts. For a long-running monitor this is fine, but on restart the
+   first request triggers a cold-start refresh which can take 5–60s
+   depending on which books are enabled.
 6. **`/model` page**. It exists but is detached from the scanner workflow.
    Read it before changing anything that crosses both pages.
+7. **Alert allowlist alignment.** `MonitorConfig.platforms` now defaults
+   to `["kalshi"]` to mirror `ScanConfig`. If the user re-enables
+   Polymarket in `ScanConfig`, they should also add it to
+   `MonitorConfig.platforms` (or the alert allowlist will silently drop
+   Polymarket BUYs). Worth deriving one from the other automatically.
+8. **Kalshi 3-way CLV math** (price_history.py): currently uses 2-way
+   cross-market arithmetic for soccer, which is incorrect when a draw
+   exists. Fix is straightforward (single-market mid for 3-way events)
+   but not yet implemented. Affects CLV-backfill accuracy only, not
+   live opportunities.
 
 ---
 
