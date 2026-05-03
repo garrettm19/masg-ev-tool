@@ -36,8 +36,15 @@ def _make_team_event(
     event_id: str = "ev1",
     home_odds: int = -150,
     away_odds: int = 130,
+    draw_odds: int | None = None,
     commence_time: str = "2026-06-01T20:00:00Z",
 ) -> TennisOddsEvent:
+    # Soccer h2h is 3-way; the feature extractor SKIPs candidates with
+    # draw_odds=None on soccer events to avoid 2-way-devig phantom EV.
+    # Auto-fill a sensible default for soccer sport_keys so tests that
+    # don't care about exact 3-way numerics still produce features.
+    if draw_odds is None and sport_key.startswith("soccer_"):
+        draw_odds = 240
     return TennisOddsEvent(
         event_id=event_id,
         sport_key=sport_key,
@@ -53,6 +60,7 @@ def _make_team_event(
                 bookmaker_title="FanDuel",
                 home_odds=home_odds,
                 away_odds=away_odds,
+                draw_odds=draw_odds,
                 last_update=commence_time,
             )
         ],
@@ -589,7 +597,8 @@ class TestTeamSportPipeline:
 
         # p_true should be devigged from home_odds=-200 for Man City
         assert yes_side.p_true > no_side.p_true  # -200 favorite
-        assert yes_side.p_true + no_side.p_true == pytest.approx(1.0, abs=0.001)
+        # Soccer is 3-way: home + away + draw == 1.0, so home + away alone < 1.0.
+        assert yes_side.p_true + no_side.p_true < 1.0
 
 
 # ---------------------------------------------------------------------------

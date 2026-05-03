@@ -32,6 +32,19 @@ def _cost_buffer(platform: str, cfg: EngineConfig) -> float:
     return cfg.cost_buffer
 
 
+def _is_three_way_sport(sport_key: str) -> bool:
+    """
+    True for sports whose native h2h market is 3-way (home / away / draw).
+
+    Currently this is all soccer leagues (Odds API keys all begin with
+    "soccer_": soccer_usa_mls, soccer_epl, soccer_germany_bundesliga, etc.).
+    The 2-way devig path inflates both teams' probabilities by the missing
+    draw mass when FanDuel doesn't publish draw odds — used here to gate
+    that fallback for soccer.
+    """
+    return sport_key.startswith("soccer_")
+
+
 def _american_to_implied(odds: int) -> float:
     if odds >= 0:
         return 100.0 / (odds + 100.0)
@@ -295,6 +308,18 @@ def extract_h2h_features(
     fd = next((bm for bm in event.bookmakers if bm.bookmaker_key == "fanduel"), None)
     if fd is None:
         # No FanDuel line — treat as no bookmaker data
+        base = _base_features(market, event, name_sc, matched, date_sc, delta_h, confidence, cfg)
+        base.pm_price = pm_yes
+        base.pm_price_no = pm_no
+        base.price_in_range = True
+        base.has_bookmaker_data = False
+        return [base]
+    # Soccer / 3-way sports: if FanDuel didn't publish a Draw outcome we
+    # cannot devig safely.  The 2-way fallback would force home+away to
+    # sum to 1.0 and inflate both teams' p_true by the missing draw mass,
+    # producing phantom positive EV on BOTH sides of the same match.
+    # Treat as no bookmaker data → routed to NO_BOOKMAKER_DATA SKIP.
+    if _is_three_way_sport(event.sport_key) and fd.draw_odds is None:
         base = _base_features(market, event, name_sc, matched, date_sc, delta_h, confidence, cfg)
         base.pm_price = pm_yes
         base.pm_price_no = pm_no

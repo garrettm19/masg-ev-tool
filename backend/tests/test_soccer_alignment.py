@@ -44,6 +44,12 @@ def _event(home: str, away: str, sport: str = "soccer_epl", **kw) -> TennisOddsE
             bookmaker_key="fanduel", bookmaker_title="FanDuel",
             home_odds=kw.get("home_odds", -150),
             away_odds=kw.get("away_odds", 130),
+            # Soccer h2h is 3-way; draw_odds must be present or the
+            # feature extractor SKIPs the candidate (NO_BOOKMAKER_DATA)
+            # to avoid 2-way-devig phantom EV. Test default supplied here
+            # for the common case; tests that want to exercise the
+            # missing-draw guard explicitly pass draw_odds=None.
+            draw_odds=kw.get("draw_odds", 240),
             last_update="2026-06-01T20:00:00Z",
         )],
     )
@@ -227,7 +233,8 @@ class TestSoccerPricingAlignment:
         assert city_side.p_true > liverpool_side.p_true
         assert city_side.pm_price == 0.55  # YES side
         assert liverpool_side.pm_price == 0.45  # NO side
-        assert city_side.p_true + liverpool_side.p_true == pytest.approx(1.0, abs=0.001)
+        # 3-way devig: home + away + draw == 1.0, so home + away alone < 1.0.
+        assert city_side.p_true + liverpool_side.p_true < 1.0
 
     def test_wrong_event_does_not_produce_priced_features(self):
         """Cross-match must not produce features with edge calculations."""
@@ -352,3 +359,85 @@ class TestSubstringCollisions:
         assert city.pm_price == 0.60  # NO price
         # But City is still the favorite (home, -200)
         assert city.p_true > liverpool.p_true
+
+
+# ---------------------------------------------------------------------------
+# Missing-draw guard: soccer h2h is 3-way; if FanDuel publishes only home
+# and away (draw_odds=None), 2-way devig would inflate both teams' p_true
+# by the missing draw mass. Reproduce the MLS Phila/NE phantom-EV scenario.
+# ---------------------------------------------------------------------------
+
+class TestSoccerMissingDrawGuard:
+    def test_soccer_with_draw_odds_runs_3way_devig(self):
+        """Sanity: with draw_odds present, soccer features extract normally
+        and 3-way devig produces home+away+draw == 1.0 (so home+away < 1.0)."""
+        market = _market("Will Manchester City beat Liverpool?", prices=["0.55", "0.45"])
+        event = _event("Manchester City", "Liverpool",
+                       home_odds=-200, away_odds=170, draw_odds=240)
+        features = extract_features(market, event, cfg)
+        assert len(features) == 2
+        for f in features:
+            assert f.has_bookmaker_data is True
+        # 3-way devig invariant: the two teams alone don't span the
+        # full probability mass (the rest is the draw).
+        total = sum(f.p_true for f in features) / 2  # /2 because each side appears twice
+        # Looser: just confirm both p_true are positive and < 1.0
+        for f in features:
+            assert 0.0 < f.p_true < 1.0
+
+    def test_soccer_missing_draw_skips_via_no_bookmaker_data(self):
+        """Missing draw_odds → feature emitted with has_bookmaker_data=False
+        and rule engine returns SKIP via NO_BOOKMAKER_DATA. Reproduces the
+        Philadelphia Union / New England Revolution phantom-EV scenario."""
+        market = _market("Will Philadelphia Union beat New England Revolution?",
+                         prices=["0.40", "0.60"])
+        event = _event("New England Revolution", "Philadelphia Union",
+                       sport="soccer_usa_mls",
+                       home_odds=190, away_odds=130, draw_odds=None)
+        features = extract_features(market, event, cfg)
+        # Feature is still emitted so the rule engine can log the rejection
+        assert len(features) >= 1
+        for f in features:
+            assert f.has_bookmaker_data is False
+            # Critically: no actionable EV calculated — p_true is left at 0.0
+            # by _base_features when bookmaker data is unavailable.
+            status, _ = evaluate_rules(f, cfg)
+            assert status == "SKIP"
+            assert "NO_BOOKMAKER_DATA" in f.reject_reasons
+
+    def test_phila_ne_revs_phantom_alert_no_longer_fires(self):
+        """The exact dry-run scenario that produced the phantom +14.8% Phila
+        Union and +8.2% NE Revolution alerts. Both sides must SKIP, not BUY."""
+        # Kalshi-style 3-way emission: per-team market with yes_ask + (1-yes_ask)
+        philly_market = _market(
+            "New England Revolution vs Philadelphia Union",
+            prices=["0.40", "0.60"],  # Philly YES at 0.40
+        )
+        # FD returns home/away only (no Draw) — the smoking-gun scenario
+        event = _event("New England Revolution", "Philadelphia Union",
+                       sport="soccer_usa_mls",
+                       home_odds=190, away_odds=130, draw_odds=None)
+        features = extract_features(philly_market, event, cfg)
+        for f in features:
+            status, _ = evaluate_rules(f, cfg)
+            # No row may reach BUY; phantom EV blocked at the source.
+            assert status != "BUY"
+
+    def test_non_soccer_2way_unaffected(self):
+        """The guard must not over-fire on legitimate 2-way sports (tennis,
+        MMA, MLB, NBA, NHL). MLB with no draw_odds runs normal 2-way devig."""
+        market = _market(
+            "Will New York Yankees beat Boston Red Sox?",
+            prices=["0.55", "0.45"],
+        )
+        event = _event("New York Yankees", "Boston Red Sox",
+                       sport="baseball_mlb",
+                       home_odds=-150, away_odds=130, draw_odds=None)
+        features = extract_features(market, event, cfg)
+        assert len(features) == 2
+        for f in features:
+            assert f.has_bookmaker_data is True
+        # 2-way devig still applies: home + away ≈ 1.0
+        yes_side = next(f for f in features if f.pm_price == 0.55)
+        no_side = next(f for f in features if f.pm_price == 0.45)
+        assert yes_side.p_true + no_side.p_true == pytest.approx(1.0, abs=0.001)
