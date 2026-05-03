@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Opportunity } from "@/lib/types";
-import { sportLabel, marketTypeLabel, isPropType, SportRegistryEntry } from "@/lib/sport-labels";
+import { SportRegistryEntry } from "@/lib/sport-labels";
+import { OpportunityRow } from "./OpportunityRow";
 
 interface Props {
   opportunities: Opportunity[];
@@ -14,77 +15,41 @@ interface Props {
   isRefreshing?: boolean;
 }
 
-function fmtPct(n: number, dec = 1): string {
-  return `${(n * 100).toFixed(dec)}%`;
+interface Column {
+  label: string;
+  align: "left" | "right" | "center";
 }
 
-function fmtAge(fetchedAt: number, nowSec: number): string {
-  if (!fetchedAt || !nowSec) return "?";
-  const sec = Math.max(0, Math.floor(nowSec - fetchedAt));
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
-  return `${Math.floor(sec / 3600)}h`;
-}
+const COLUMNS: Column[] = [
+  { label: "Event",         align: "left"   },
+  { label: "Type",          align: "left"   },
+  { label: "Detail",        align: "left"   },
+  { label: "Side",          align: "left"   },
+  { label: "Start (local)", align: "left"   },
+  { label: "Price",         align: "right"  },
+  { label: "Age",           align: "center" },
+  { label: "FD Odds",       align: "right"  },
+  { label: "True Prob",     align: "right"  },
+  { label: "Edge",          align: "right"  },
+  { label: "Kelly",         align: "right"  },
+  { label: "Bet Size",      align: "right"  },
+  { label: "Status",        align: "center" },
+  { label: "Trade",         align: "center" },
+];
 
-function ageColor(fetchedAt: number, nowSec: number): string {
-  if (!fetchedAt || !nowSec) return "#4b5563";
-  const sec = nowSec - fetchedAt;
-  if (sec < 300) return "#2dd4bf";    // <5min green
-  if (sec < 900) return "#fbbf24";    // <15min yellow
-  return "#f87171";                    // >15min red
-}
-
-function fmtOdds(n: number): string {
-  return n > 0 ? `+${n}` : `${n}`;
-}
-
-function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso.slice(0, 10);
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${months[d.getMonth()]} ${d.getDate()}, ${hh}:${mm}`;
-}
-
-function platformLabel(p: string): string {
-  if (p === "polymarket") return "Polymarket";
-  if (p === "kalshi") return "Kalshi";
-  return p.charAt(0).toUpperCase() + p.slice(1);
-}
-
-function platformColor(p: string): string {
-  if (p === "polymarket") return "#a78bfa";
-  if (p === "kalshi") return "#38bdf8";
-  return "#94a3b8";
-}
-
-// sportLabel imported from @/lib/sport-labels
-
-function edgeColor(edge: number): string {
-  if (edge >= 0.10) return "#2dd4bf";
-  if (edge >= 0.05) return "#67e8f9";
-  if (edge >= 0.02) return "#a7f3d0";
-  return "#94a3b8";
-}
-
-type Status = "BUY" | "WATCH" | "SKIP";
-
-const STATUS_STYLE: Record<Status, { color: string; bg: string; border: string }> = {
-  BUY:   { color: "#2dd4bf", bg: "rgba(45,212,191,0.08)",  border: "rgba(45,212,191,0.25)" },
-  WATCH: { color: "#38bdf8", bg: "rgba(56,189,248,0.06)",  border: "rgba(56,189,248,0.2)"  },
-  SKIP:  { color: "#4b5563", bg: "rgba(75,85,99,0.05)",    border: "rgba(75,85,99,0.15)"   },
-};
-
-// Legacy constant — kept for any remaining references; new code uses marketTypeLabel()
-const MARKET_TYPE_LABEL: Record<string, string> = {
-  h2h: "H2H", handicap: "HCAP", totals: "TOT", first_set: "1ST", unknown: "?",
-};
-
-export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankroll = 1000, isTaken, sportsRegistry, isRefreshing = false }: Props) {
+export function OpportunitiesTable({
+  opportunities,
+  selectedId,
+  onSelect,
+  bankroll = 1000,
+  isTaken,
+  sportsRegistry,
+  isRefreshing = false,
+}: Props) {
   const rows = opportunities.slice(0, 30);
 
   // Stable across SSR/client: starts at 0 (renders "?"), hydrates on mount.
+  // Single ticker for the whole table — children read via prop, no re-bind.
   const [nowSec, setNowSec] = useState(0);
   useEffect(() => {
     setNowSec(Date.now() / 1000);
@@ -95,36 +60,44 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
   return (
     <div
       className="rounded-lg border overflow-hidden"
-      style={{ background: "#0c1315", borderColor: "rgba(19,78,74,0.35)" }}
+      style={{
+        background: "var(--bg-surface)",
+        borderColor: "var(--border-default)",
+        borderRadius: "var(--radius-lg)",
+      }}
     >
       {/* Header */}
       <div
         className="flex items-center justify-between px-4 py-2.5 border-b"
-        style={{ borderColor: "rgba(19,78,74,0.25)" }}
+        style={{ borderColor: "var(--border-subtle)" }}
       >
         <div className="flex items-center gap-3">
           <span
-            className="font-mono text-[10px] tracking-[0.15em] uppercase font-medium"
-            style={{ color: "#2dd4bf" }}
+            className="font-mono uppercase tracking-[0.15em] font-medium"
+            style={{ fontSize: "10px", color: "var(--accent)" }}
           >
             Opportunities
           </span>
-          <span className="font-mono text-[9px]" style={{ color: "#374151" }}>
+          <span className="font-mono" style={{ fontSize: "10px", color: "var(--fg-ghost)" }}>
             {rows.length} matched, sorted by edge
           </span>
         </div>
         <span
           className="w-1.5 h-1.5 rounded-full"
-          style={{ background: rows.length > 0 ? "#2dd4bf" : "#374151", boxShadow: rows.length > 0 ? "0 0 6px #2dd4bf" : "none" }}
+          style={{
+            background: rows.length > 0 ? "var(--accent)" : "var(--fg-ghost)",
+            boxShadow: rows.length > 0 ? "0 0 6px var(--accent)" : "none",
+          }}
+          aria-hidden="true"
         />
       </div>
 
       {rows.length === 0 ? (
         <div className="px-4 py-16 text-center space-y-2">
-          <p className="font-mono text-[12px]" style={{ color: "#374151" }}>
+          <p className="font-mono" style={{ fontSize: "12px", color: "var(--fg-ghost)" }}>
             No opportunities found
           </p>
-          <p className="font-mono text-[10px]" style={{ color: "#1f3a3d" }}>
+          <p className="font-mono" style={{ fontSize: "11px", color: "var(--fg-disabled)" }}>
             Try lowering the minimum edge threshold or check back when more matches are scheduled
           </p>
         </div>
@@ -132,28 +105,24 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr style={{ borderBottom: "1px solid rgba(19,78,74,0.2)" }}>
-                {[
-                  { label: "Event",     align: "left"   },
-                  { label: "Type",      align: "left"   },
-                  { label: "Detail",    align: "left"   },
-                  { label: "Side",      align: "left"   },
-                  { label: "Start (local)", align: "left"   },
-                  { label: "Price",     align: "right"  },
-                  { label: "Age",       align: "center" },
-                  { label: "FD Odds",   align: "right"  },
-                  { label: "True Prob", align: "right"  },
-                  { label: "Edge",      align: "right"  },
-                  { label: "Kelly",     align: "right"  },
-                  { label: "Bet Size",  align: "right"  },
-                  { label: "Status",    align: "center" },
-                  { label: "Trade",     align: "center" },
-                ].map((col) => (
+              <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                {COLUMNS.map((col) => (
                   <th
                     key={col.label}
-                    className={`px-3 py-2.5 font-mono text-[9px] tracking-[0.12em] uppercase whitespace-nowrap font-normal
-                      ${col.align === "right" ? "text-right" : col.align === "center" ? "text-center" : "text-left"}`}
-                    style={{ color: "#374151" }}
+                    scope="col"
+                    className={
+                      "px-3 py-2.5 font-mono uppercase whitespace-nowrap font-normal " +
+                      (col.align === "right"
+                        ? "text-right"
+                        : col.align === "center"
+                          ? "text-center"
+                          : "text-left")
+                    }
+                    style={{
+                      fontSize: "10px",
+                      letterSpacing: "0.12em",
+                      color: "var(--fg-ghost)",
+                    }}
                   >
                     {col.label}
                   </th>
@@ -161,218 +130,20 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
               </tr>
             </thead>
             <tbody>
-              {rows.map((opp, i) => {
-                const ss = STATUS_STYLE[(opp.status as Status)] ?? STATUS_STYLE.SKIP;
-                const isSelected = selectedId === opp.market_id;
-                const taken = isTaken?.(opp) ?? false;
-                const pColor = platformColor(opp.platform);
-
-                return (
-                  <tr
-                    key={`${opp.market_id}-${opp.side}`}
-                    onClick={() => onSelect?.(opp)}
-                    style={{
-                      borderBottom: "1px solid rgba(19,78,74,0.08)",
-                      borderLeft: taken ? "2px solid #f59e0b" : "2px solid transparent",
-                      background: isSelected
-                        ? "rgba(45,212,191,0.06)"
-                        : taken
-                          ? "rgba(245,158,11,0.03)"
-                          : i % 2 === 0 ? "transparent" : "rgba(13,20,22,0.35)",
-                    }}
-                    className="hover:bg-[rgba(45,212,191,0.04)] transition-colors duration-100 cursor-pointer"
-                  >
-                    {/* Event */}
-                    <td className="px-3 py-3" style={{ minWidth: 220 }}>
-                      <p className="font-mono text-[11px] leading-snug" style={{ color: "#cbd5e1" }}>
-                        {opp.event}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span
-                          className="font-mono text-[7px] tracking-wider px-1 py-px rounded uppercase shrink-0"
-                          style={{ color: "#67e8f9", background: "rgba(103,232,249,0.08)" }}
-                        >
-                          {sportLabel(opp.sport, sportsRegistry)}
-                        </span>
-                        <span className="font-mono text-[9px]" style={{ color: "#374151" }}>
-                          {opp.tournament}
-                        </span>
-                        <span
-                          className="font-mono text-[7px] tracking-wider px-1 py-px rounded uppercase shrink-0"
-                          style={{ color: pColor, background: `${pColor}14` }}
-                        >
-                          {platformLabel(opp.platform)}
-                        </span>
-                      </div>
-                    </td>
-
-                    {/* Type */}
-                    <td className="px-3 py-3">
-                      <span
-                        className="inline-block font-mono text-[8px] tracking-wider px-1.5 py-0.5 rounded uppercase"
-                        style={isPropType(opp.market_type)
-                          ? { color: "#c084fc", background: "rgba(192,132,252,0.08)" }
-                          : opp.market_type === "totals"
-                            ? { color: "#fbbf24", background: "rgba(251,191,36,0.08)" }
-                            : { color: "#6b7280", background: "rgba(75,85,99,0.06)" }
-                        }
-                      >
-                        {isPropType(opp.market_type) ? "Prop" : opp.market_type === "totals" ? "Total" : "H2H"}
-                      </span>
-                    </td>
-
-                    {/* Detail */}
-                    <td className="px-3 py-3">
-                      {isPropType(opp.market_type) ? (
-                        <span className="font-mono text-[10px]" style={{ color: "#cbd5e1" }}>
-                          {opp.side.replace(/\s+(Over|Under)$/i, "")}{" "}
-                          <span style={{ color: "#c084fc" }}>{marketTypeLabel(opp.market_type)}</span>{" "}
-                          <span style={{ color: "#94a3b8" }}>{opp.line}</span>
-                        </span>
-                      ) : opp.market_type === "totals" ? (
-                        <span className="font-mono text-[10px]" style={{ color: "#cbd5e1" }}>
-                          O/U <span style={{ color: "#fbbf24" }}>{opp.line}</span>
-                        </span>
-                      ) : (
-                        <span className="font-mono text-[10px]" style={{ color: "#4b5563" }}>
-                          Moneyline
-                        </span>
-                      )}
-                    </td>
-
-                    {/* Side */}
-                    <td className="px-3 py-3">
-                      {isPropType(opp.market_type) || opp.market_type === "totals" ? (
-                        <span className="font-mono text-[11px] font-medium" style={{
-                          color: opp.side.toLowerCase().includes("over") ? "#2dd4bf" : "#f87171"
-                        }}>
-                          {opp.side.toLowerCase().includes("over") ? "Over" : opp.side.toLowerCase().includes("under") ? "Under" : opp.side}
-                        </span>
-                      ) : (
-                        <>
-                          <span className="font-mono text-[11px] font-medium" style={{ color: "#e2e8f0" }}>
-                            {opp.side}
-                          </span>
-                          {opp.line != null && (
-                            <span className="font-mono text-[9px] ml-1" style={{ color: "#6b7280" }}>
-                              {opp.line > 0 ? `+${opp.line}` : opp.line}
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </td>
-
-                    {/* Start */}
-                    <td className="px-3 py-3 font-mono text-[10px] whitespace-nowrap" style={{ color: "#4b5563" }}>
-                      {fmtTime(opp.start_time)}
-                    </td>
-
-                    {/* Price */}
-                    <td className="px-3 py-3 text-right font-mono text-[11px]" style={{ color: "#94a3b8" }}>
-                      {(opp.pm_price * 100).toFixed(1)}{"¢"}
-                    </td>
-
-                    {/* Age */}
-                    <td
-                      className="px-3 py-3 text-center font-mono text-[9px]"
-                      style={{ color: isRefreshing ? "#4b5563" : ageColor(opp.price_fetched_at, nowSec) }}
-                      title={isRefreshing ? "Price age hidden while scan is running" : undefined}
-                    >
-                      {isRefreshing ? "…" : fmtAge(opp.price_fetched_at, nowSec)}
-                    </td>
-
-                    {/* FD Odds */}
-                    <td className="px-3 py-3 text-right font-mono text-[10px]" style={{ color: "#6b7280" }}>
-                      {fmtOdds(opp.fd_odds)}
-                    </td>
-
-                    {/* True Prob */}
-                    <td className="px-3 py-3 text-right font-mono text-[11px]" style={{ color: "#e2e8f0" }}>
-                      {fmtPct(opp.p_true)}
-                    </td>
-
-                    {/* Edge */}
-                    <td className="px-3 py-3 text-right">
-                      <span className="font-mono text-[12px] font-semibold" style={{ color: edgeColor(opp.edge) }}>
-                        +{fmtPct(opp.edge)}
-                      </span>
-                    </td>
-
-                    {/* Kelly */}
-                    <td className="px-3 py-3 text-right font-mono text-[10px]" style={{ color: "#38bdf8" }}>
-                      {opp.recommended_kelly > 0 ? fmtPct(opp.recommended_kelly) : "--"}
-                    </td>
-
-                    {/* Bet Size */}
-                    <td className="px-3 py-3 text-right font-mono text-[11px]" style={{ color: opp.recommended_kelly > 0 ? "#e2e8f0" : "#374151" }}>
-                      {opp.recommended_kelly > 0
-                        ? `$${Math.round(bankroll * opp.recommended_kelly).toLocaleString()}`
-                        : "--"}
-                    </td>
-
-                    {/* Status */}
-                    <td className="px-3 py-3 text-center">
-                      <div className="inline-flex items-center gap-1">
-                        <span
-                          className={`inline-block font-mono text-[9px] tracking-wider px-2.5 py-1 rounded-md border ${opp.status === "BUY" ? "font-bold" : "font-medium"}`}
-                          style={{
-                            color: ss.color,
-                            background: ss.bg,
-                            borderColor: ss.border,
-                            // WATCH = non-actionable; a dashed border communicates "not a BUY".
-                            borderStyle: opp.status === "WATCH" ? "dashed" : "solid",
-                            opacity: opp.status === "WATCH" ? 0.85 : 1,
-                          }}
-                          title={opp.status === "WATCH" ? "Watch only — not actionable. A downgrade rule failed." : opp.status === "BUY" ? "All rules pass — actionable per your criteria" : "Skipped — a critical rule failed"}
-                        >
-                          {opp.status}
-                        </span>
-                        {taken && (
-                          <span
-                            className="inline-block font-mono text-[7px] tracking-wider px-1.5 py-0.5 rounded-md uppercase"
-                            style={{ color: "#f59e0b", background: "rgba(245,158,11,0.1)" }}
-                          >
-                            Taken
-                          </span>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* Trade link */}
-                    <td className="px-3 py-3 text-center">
-                      {opp.event_url ? (
-                        <a
-                          href={opp.event_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 font-mono text-[9px] px-2.5 py-1 rounded-md border transition-all duration-150"
-                          style={{
-                            color: pColor,
-                            background: `${pColor}08`,
-                            borderColor: `${pColor}30`,
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.background = `${pColor}18`;
-                            e.currentTarget.style.borderColor = `${pColor}50`;
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.background = `${pColor}08`;
-                            e.currentTarget.style.borderColor = `${pColor}30`;
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          View
-                          <svg width="8" height="8" viewBox="0 0 10 10" fill="none" style={{ opacity: 0.7 }}>
-                            <path d="M1 9L9 1M9 1H3M9 1V7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        </a>
-                      ) : (
-                        <span className="font-mono text-[9px]" style={{ color: "#1f3a3d" }}>--</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
+              {rows.map((opp, i) => (
+                <OpportunityRow
+                  key={`${opp.market_id}-${opp.side}`}
+                  opp={opp}
+                  index={i}
+                  isSelected={selectedId === opp.market_id}
+                  isTaken={isTaken?.(opp) ?? false}
+                  bankroll={bankroll}
+                  sportsRegistry={sportsRegistry}
+                  nowSec={nowSec}
+                  isRefreshing={isRefreshing}
+                  onSelect={(o) => onSelect?.(o)}
+                />
+              ))}
             </tbody>
           </table>
         </div>
