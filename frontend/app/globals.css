@@ -5,6 +5,84 @@
   --font-mono: var(--font-mono), ui-monospace, "JetBrains Mono", "Geist Mono", monospace;
 }
 
+/* ===========================================================================
+   Design tokens — single source of truth for colors, radii, focus, glows.
+   Consumed via var(--token) inline or via lib/tokens.ts in TS.
+   Kept on :root (not @theme) so they don't generate Tailwind utilities yet;
+   primitives in app/components/ui/ read them directly. Future commits can
+   migrate selected tokens into @theme to expose utility classes.
+   =========================================================================== */
+:root {
+  /* Backgrounds */
+  --bg-canvas: #07090a;
+  --bg-surface: #0c1315;
+  --bg-surface-2: #0f1a1d;
+  --bg-overlay: rgba(13, 20, 22, 0.5);
+
+  /* Borders */
+  --border-subtle: rgba(19, 78, 74, 0.18);
+  --border-default: rgba(19, 78, 74, 0.35);
+  --border-strong: rgba(19, 78, 74, 0.55);
+
+  /* Foregrounds */
+  --fg-primary: #e2e8f0;
+  --fg-secondary: #94a3b8;
+  --fg-muted: #6b7280;
+  --fg-faint: #4b5563;
+  --fg-ghost: #374151;
+  --fg-disabled: #1f3a3d;
+
+  /* Accent — teal (BUY, links, primary actions, focus rings) */
+  --accent: #2dd4bf;
+  --accent-soft: rgba(45, 212, 191, 0.06);
+  --accent-border: rgba(45, 212, 191, 0.25);
+
+  /* Info — cyan (WATCH, kalshi, kelly column) */
+  --info: #38bdf8;
+  --info-soft: rgba(56, 189, 248, 0.06);
+  --info-border: rgba(56, 189, 248, 0.25);
+
+  /* Warn — amber (dry-run, taken position, polymarket-opt-in) */
+  --warn: #f59e0b;
+  --warn-strong: #fbbf24;
+  --warn-soft: rgba(245, 158, 11, 0.06);
+  --warn-border: rgba(245, 158, 11, 0.25);
+
+  /* Danger — red (live alerts, errors, missing books) */
+  --danger: #ef4444;
+  --danger-strong: #f87171;
+  --danger-soft: rgba(239, 68, 68, 0.06);
+  --danger-border: rgba(239, 68, 68, 0.30);
+
+  /* Success — green (monitor running, fresh cache) */
+  --success: #4ade80;
+  --success-soft: rgba(74, 222, 128, 0.06);
+  --success-border: rgba(74, 222, 128, 0.25);
+
+  /* Platform-specific accents */
+  --platform-polymarket: #a78bfa;
+  --platform-kalshi: #38bdf8;
+  --platform-fanduel: #67e8f9;
+
+  /* Edge ramp — semantic data viz, not UI chrome */
+  --edge-elite: #2dd4bf;   /* >= 10% */
+  --edge-strong: #67e8f9;  /* >=  5% */
+  --edge-soft: #a7f3d0;    /* >=  2% */
+  --edge-mute: #94a3b8;    /*  <  2% */
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* Effects */
+  --ring-focus: 0 0 0 2px rgba(45, 212, 191, 0.45);
+  --glow-active: 0 0 6px currentColor;
+  --glow-danger: 0 0 8px rgba(239, 68, 68, 0.45);
+  --inset-card: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
 /* Use tabular numerals on every monospaced data column so digits align
    regardless of glyph width. Applies anywhere `font-mono` is used. */
 .font-mono,
