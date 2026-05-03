@@ -11,6 +11,9 @@ import {
   stopMonitoring,
   testNotification,
 } from "@/lib/monitor-api";
+import { Toggle } from "../ui/Toggle";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { LiveModeBanner } from "./LiveModeBanner";
 
 // ---------------------------------------------------------------------------
 // useCountdown — syncs to server value, ticks locally every second
@@ -95,8 +98,8 @@ const PRESETS = [
   { value: "aggressive", label: "Aggressive", desc: "3% EV, 10m refresh, 15m cooldown" },
 ];
 
-const iStyle = { background: "rgba(13,20,22,0.8)", borderColor: "rgba(19,78,74,0.3)", color: "#e2e8f0" };
-const iClass = "rounded border font-mono text-[11px] focus:outline-none focus:border-[rgba(45,212,191,0.5)]";
+const iStyle = { background: "rgba(13,20,22,0.8)", borderColor: "var(--border-default)", color: "var(--fg-primary)" };
+const iClass = "rounded border font-mono text-[11px] focus:outline-none focus-visible:[box-shadow:var(--ring-focus)] focus:[border-color:var(--accent-border)]";
 
 // ---------------------------------------------------------------------------
 // Component
@@ -110,6 +113,7 @@ export function NotificationSettings({ config, status, onReload }: Props) {
   const [starting, setStarting] = useState(false);
   const [testState, setTestState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [confirmLiveOpen, setConfirmLiveOpen] = useState(false);
 
   const poller = status?.odds_poller as Record<string, number | null> | undefined;
   const serverNext = poller?.seconds_until_next ?? null;
@@ -128,6 +132,8 @@ export function NotificationSettings({ config, status, onReload }: Props) {
   const lastCycle = status?.last_cycle_result as Record<string, number> | null;
 
   if (!config) return null;
+
+  const liveActive = running && !config.dry_run;
 
   const save = async (updates: Record<string, unknown>) => {
     setSaving(true); setError(null);
@@ -158,221 +164,573 @@ export function NotificationSettings({ config, status, onReload }: Props) {
     setTimeout(() => setTestState("idle"), 4000);
   };
 
-  const countdownColor = countdown == null ? "#374151" : countdown <= 0 ? "#2dd4bf" : countdown <= 30 ? "#f59e0b" : "#6b7280";
+  // Toggle change handler. Going dry-run -> live REQUIRES confirmation;
+  // going live -> dry-run is safer and saves immediately.
+  const handleNotificationToggle = (next: boolean) => {
+    if (next) {
+      // Proposed: enable live alerts (dry_run = false). Open confirm.
+      setConfirmLiveOpen(true);
+    } else {
+      // Proposed: return to dry-run (dry_run = true). Safe, save now.
+      void save({ dry_run: true });
+    }
+  };
+
+  const countdownColor = countdown == null
+    ? "var(--fg-ghost)"
+    : countdown <= 0
+      ? "var(--accent)"
+      : countdown <= 30
+        ? "var(--warn)"
+        : "var(--fg-muted)";
 
   return (
-    <div className="rounded-lg border" style={{ background: "#0c1315", borderColor: "rgba(19,78,74,0.35)" }}>
-      {/* ── COLLAPSED BAR ── */}
-      <div className="flex items-center justify-between px-4 py-2 cursor-pointer select-none" onClick={() => setExpanded(!expanded)}>
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-[10px] tracking-[0.12em] uppercase font-medium" style={{ color: running ? "#2dd4bf" : "#4b5563" }}>
-            Phone Alerts
-          </span>
-          {running && config.preset !== "custom" && (
-            <span className="font-mono text-[8px] tracking-wider px-1.5 py-0.5 rounded-md border uppercase"
-              style={{ color: "#2dd4bf", background: "rgba(45,212,191,0.06)", borderColor: "rgba(45,212,191,0.2)" }}>
-              {config.preset}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3 font-mono text-[9px]" style={{ color: "#374151" }}>
-          {running && countdown != null && (
-            <>
-              <span>Next scan <span style={{ color: countdownColor, fontVariantNumeric: "tabular-nums" }}>{fmtCountdown(countdown)}</span></span>
-              <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
-              <span>{(config.min_ev * 100).toFixed(0)}%+ EV</span>
-              <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
-            </>
-          )}
-          {totalSent > 0 && <><span>{totalSent} sent</span><div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} /></>}
-          {running ? (
-            <div className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#4ade80", boxShadow: "0 0 4px #4ade80" }} />
-              <span>Live</span>
-            </div>
-          ) : (
-            <span style={{ color: "#374151" }}>Off</span>
-          )}
-          <span style={{ color: "#1f3a3d" }}>{expanded ? "\u25B2" : "\u25BC"}</span>
-        </div>
-      </div>
+    <>
+      <LiveModeBanner
+        show={liveActive}
+        cooldownMinutes={config.cooldown_minutes}
+        maxAlertsPerHour={config.max_alerts_per_hour}
+        onDisable={() => save({ dry_run: true })}
+      />
 
-      {/* ── EXPANDED ── */}
-      {expanded && (
-        <div className="px-4 pb-4 space-y-4" style={{ borderTop: "1px solid rgba(19,78,74,0.2)" }}>
-
-          {/* Start / Stop button */}
-          <div className="pt-3 flex items-center gap-3">
-            <button
-              onClick={handleStartStop}
-              disabled={starting}
-              className="px-5 py-2 rounded-md border font-mono text-[11px] font-semibold tracking-wider uppercase transition-all"
-              style={running ? {
-                color: "#ef4444", background: "rgba(239,68,68,0.06)", borderColor: "rgba(239,68,68,0.25)",
-              } : {
-                color: "#2dd4bf", background: "rgba(45,212,191,0.06)", borderColor: "rgba(45,212,191,0.25)",
+      <div
+        className="rounded-lg border"
+        style={{
+          background: "var(--bg-surface)",
+          borderColor: liveActive ? "var(--danger-border)" : "var(--border-default)",
+          borderRadius: "var(--radius-lg)",
+        }}
+      >
+        {/* ── COLLAPSED BAR ── */}
+        <div
+          className="flex items-center justify-between px-4 py-2 cursor-pointer select-none"
+          onClick={() => setExpanded(!expanded)}
+        >
+          <div className="flex items-center gap-3">
+            <span
+              className="font-mono uppercase tracking-[0.12em] font-medium"
+              style={{
+                fontSize: "10px",
+                color: liveActive ? "var(--danger-strong)" : running ? "var(--accent)" : "var(--fg-faint)",
               }}
             >
-              {starting ? "..." : running ? "Stop Monitoring" : "Start Monitoring"}
-            </button>
-            {error && <span className="font-mono text-[9px]" style={{ color: "#ef4444" }}>{error}</span>}
-            {!config.has_pushover_credentials && !running && (
-              <span className="font-mono text-[9px]" style={{ color: "#f59e0b" }}>
-                Set PUSHOVER keys in .env first
+              Phone Alerts
+            </span>
+            {running && config.preset !== "custom" && (
+              <span
+                className="font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-md border"
+                style={{
+                  fontSize: "8px",
+                  color: "var(--accent)",
+                  background: "var(--accent-soft)",
+                  borderColor: "var(--accent-border)",
+                }}
+              >
+                {config.preset}
               </span>
             )}
           </div>
-
-          {/* Live dashboard — only when running */}
-          {running && (
-            <div className="grid grid-cols-5 gap-3">
-              <div className="rounded-md border px-3 py-2" style={{ borderColor: "rgba(19,78,74,0.2)", background: "rgba(13,20,22,0.5)" }}>
-                <div className="font-mono text-[8px] uppercase tracking-wider" style={{ color: "#4b5563" }}>Next Scan</div>
-                <div className="font-mono text-[14px] font-bold mt-0.5" style={{ color: countdownColor, fontVariantNumeric: "tabular-nums" }}>
-                  {fmtCountdown(countdown)}
+          <div
+            className="flex items-center gap-3 font-mono"
+            style={{ fontSize: "10px", color: "var(--fg-ghost)" }}
+          >
+            {running && countdown != null && (
+              <>
+                <span>
+                  Next scan{" "}
+                  <span style={{ color: countdownColor, fontVariantNumeric: "tabular-nums" }}>
+                    {fmtCountdown(countdown)}
+                  </span>
+                </span>
+                <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
+                <span>{(config.min_ev * 100).toFixed(0)}%+ EV</span>
+                <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
+              </>
+            )}
+            {totalSent > 0 && (
+              <>
+                <span>{totalSent} sent</span>
+                <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
+              </>
+            )}
+            {running ? (
+              liveActive ? (
+                <div className="flex items-center gap-1.5" title="LIVE Pushover alerts active">
+                  <span
+                    className="w-1.5 h-1.5 rounded-full animate-pulse"
+                    style={{ background: "var(--danger)", boxShadow: "0 0 6px var(--danger)" }}
+                  />
+                  <span style={{ color: "var(--danger-strong)", fontWeight: 600 }}>LIVE</span>
                 </div>
-                <div className="font-mono text-[8px] mt-0.5" style={{ color: "#374151" }}>every {refreshMin}m</div>
-              </div>
-              <div className="rounded-md border px-3 py-2" style={{ borderColor: "rgba(19,78,74,0.2)", background: "rgba(13,20,22,0.5)" }}>
-                <div className="font-mono text-[8px] uppercase tracking-wider" style={{ color: "#4b5563" }}>API Budget</div>
-                <div className="font-mono text-[14px] font-bold mt-0.5" style={{ color: pollsRemaining <= 3 ? "#ef4444" : pollsRemaining <= 10 ? "#f59e0b" : "#e2e8f0", fontVariantNumeric: "tabular-nums" }}>
-                  {pollsRemaining}/{pollsMax}
+              ) : (
+                <div className="flex items-center gap-1.5" title="Monitor running, dry-run on (no real alerts)">
+                  <span
+                    className="w-1.5 h-1.5 rounded-full animate-pulse"
+                    style={{ background: "var(--warn)", boxShadow: "0 0 4px var(--warn)" }}
+                  />
+                  <span style={{ color: "var(--warn-strong)" }}>Dry-run</span>
                 </div>
-                <div className="font-mono text-[8px] mt-0.5" style={{ color: "#374151" }}>polls left today</div>
-              </div>
-              <div className="rounded-md border px-3 py-2" style={{ borderColor: "rgba(19,78,74,0.2)", background: "rgba(13,20,22,0.5)" }}>
-                <div className="font-mono text-[8px] uppercase tracking-wider" style={{ color: "#4b5563" }}>FD Events</div>
-                <div className="font-mono text-[14px] font-bold mt-0.5" style={{ color: "#e2e8f0", fontVariantNumeric: "tabular-nums" }}>{eventCount}</div>
-                <div className="font-mono text-[8px] mt-0.5" style={{ color: "#374151" }}>scanned {lastScanAgo}</div>
-              </div>
-              <div className="rounded-md border px-3 py-2" style={{ borderColor: "rgba(19,78,74,0.2)", background: "rgba(13,20,22,0.5)" }}>
-                <div className="font-mono text-[8px] uppercase tracking-wider" style={{ color: "#4b5563" }}>Alerts Sent</div>
-                <div className="font-mono text-[14px] font-bold mt-0.5" style={{ color: totalSent > 0 ? "#a78bfa" : "#374151", fontVariantNumeric: "tabular-nums" }}>{totalSent}</div>
-                <div className="font-mono text-[8px] mt-0.5" style={{ color: "#374151" }}>{totalCycles} scans</div>
-              </div>
-              <div className="rounded-md border px-3 py-2" style={{ borderColor: "rgba(19,78,74,0.2)", background: "rgba(13,20,22,0.5)" }}>
-                <div className="font-mono text-[8px] uppercase tracking-wider" style={{ color: "#4b5563" }}>Last Scan</div>
-                {lastCycle ? (
-                  <div className="flex flex-col gap-0.5 mt-1 font-mono text-[9px]">
-                    <span style={{ color: "#6b7280" }}>{lastCycle.candidates_evaluated ?? 0} evaluated</span>
-                    <span style={{ color: "#6b7280" }}>{lastCycle.filter_passed ?? 0} qualified</span>
-                    <span style={{ color: (lastCycle.alerts_sent ?? 0) > 0 ? "#a78bfa" : "#6b7280" }}>{lastCycle.alerts_sent ?? 0} alerted</span>
-                  </div>
-                ) : (
-                  <div className="font-mono text-[9px] mt-1" style={{ color: "#374151" }}>waiting...</div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ── Preset selector ── */}
-          <div>
-            <div className="font-mono text-[9px] uppercase tracking-wider mb-2" style={{ color: "#4b5563" }}>Preset</div>
-            <div className="flex gap-2">
-              {PRESETS.map((p) => {
-                const active = config.preset === p.value;
-                return (
-                  <button key={p.value} onClick={() => save({ preset: p.value })} disabled={saving}
-                    className="flex-1 px-3 py-2 rounded-md border text-left transition-all"
-                    style={{ background: active ? "rgba(45,212,191,0.06)" : "transparent", borderColor: active ? "rgba(45,212,191,0.25)" : "rgba(75,85,99,0.12)" }}>
-                    <div className="font-mono text-[10px] font-semibold" style={{ color: active ? "#2dd4bf" : "#6b7280" }}>{p.label}</div>
-                    <div className="font-mono text-[8px] mt-0.5 leading-relaxed" style={{ color: "#374151" }}>{p.desc}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* ── Settings ── */}
-          <div>
-            <div className="font-mono text-[9px] uppercase tracking-wider mb-2" style={{ color: "#4b5563" }}>Settings</div>
-            <div className="grid grid-cols-4 gap-x-4 gap-y-2">
-              <div className="space-y-1">
-                <label className="font-mono text-[9px]" style={{ color: "#4b5563" }}>Min EV</label>
-                <div className="relative">
-                  <input type="number" step="1" min="1" max="50"
-                    value={Math.round(config.min_ev * 100)}
-                    onChange={(e) => save({ min_ev: parseFloat(e.target.value) / 100 })}
-                    className={`w-full pl-2 pr-5 py-1 text-right ${iClass}`} style={iStyle} />
-                  <span className="absolute right-1.5 top-1/2 -translate-y-1/2 font-mono text-[9px]" style={{ color: "#374151" }}>%</span>
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className="font-mono text-[9px]" style={{ color: "#4b5563" }}>Refresh every</label>
-                <div className="relative">
-                  <input type="number" step="5" min="5" max="60"
-                    value={config.refresh_interval_minutes}
-                    onChange={(e) => save({ refresh_interval_minutes: parseInt(e.target.value) || 15 })}
-                    className={`w-full pl-2 pr-7 py-1 text-right ${iClass}`} style={iStyle} />
-                  <span className="absolute right-1.5 top-1/2 -translate-y-1/2 font-mono text-[9px]" style={{ color: "#374151" }}>min</span>
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className="font-mono text-[9px]" style={{ color: "#4b5563" }}>Cooldown</label>
-                <div className="relative">
-                  <input type="number" step="5" min="5" max="120"
-                    value={config.cooldown_minutes}
-                    onChange={(e) => save({ cooldown_minutes: parseInt(e.target.value) || 30 })}
-                    className={`w-full pl-2 pr-7 py-1 text-right ${iClass}`} style={iStyle} />
-                  <span className="absolute right-1.5 top-1/2 -translate-y-1/2 font-mono text-[9px]" style={{ color: "#374151" }}>min</span>
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className="font-mono text-[9px]" style={{ color: "#4b5563" }}>Max alerts/hr</label>
-                <input type="number" step="1" min="1" max="30"
-                  value={config.max_alerts_per_hour}
-                  onChange={(e) => save({ max_alerts_per_hour: parseInt(e.target.value) || 10 })}
-                  className={`w-full px-2 py-1 text-right ${iClass}`} style={iStyle} />
-              </div>
-            </div>
-          </div>
-
-          {/* ── Platforms + dry run ── */}
-          <div className="flex items-center gap-4">
-            <span className="font-mono text-[9px]" style={{ color: "#4b5563" }}>Platforms</span>
-            {["polymarket", "kalshi"].map((p) => (
-              <label key={p} className="flex items-center gap-1 font-mono text-[10px] cursor-pointer"
-                style={{ color: config.platforms.includes(p) ? "#e2e8f0" : "#4b5563" }}>
-                <input type="checkbox" checked={config.platforms.includes(p)}
-                  onChange={(e) => {
-                    const next = e.target.checked ? [...config.platforms, p] : config.platforms.filter((x) => x !== p);
-                    if (next.length > 0) save({ platforms: next });
-                  }}
-                  className="w-3 h-3 rounded accent-teal-400" />
-                {p === "polymarket" ? "Polymarket" : "Kalshi"}
-              </label>
-            ))}
-            <div className="h-3 w-px" style={{ background: "rgba(75,85,99,0.15)" }} />
-            <label className="flex items-center gap-1 font-mono text-[10px] cursor-pointer"
-              style={{ color: config.dry_run ? "#f59e0b" : "#4b5563" }}>
-              <input type="checkbox" checked={config.dry_run}
-                onChange={(e) => save({ dry_run: e.target.checked })}
-                className="w-3 h-3 rounded accent-amber-400" />
-              Dry run
-            </label>
-          </div>
-
-          {/* ── Footer ── */}
-          <div className="flex items-center justify-between pt-2" style={{ borderTop: "1px solid rgba(19,78,74,0.12)" }}>
-            <div className="font-mono text-[9px]" style={{ color: "#374151" }}>
-              {config.has_pushover_credentials
-                ? <span style={{ color: "#4b5563" }}>Pushover connected</span>
-                : <span>Set PUSHOVER_USER_KEY + PUSHOVER_API_TOKEN in .env &mdash; <a href="https://pushover.net" target="_blank" rel="noopener noreferrer" style={{ color: "#4b5563", textDecoration: "underline" }}>pushover.net</a></span>
-              }
-            </div>
-            <button onClick={handleTest}
-              disabled={testState === "sending" || !config.has_pushover_credentials}
-              className="px-3 py-1 rounded-md border font-mono text-[9px] tracking-wider uppercase transition-all"
-              style={{
-                color: testState === "sent" ? "#4ade80" : testState === "failed" ? "#ef4444" : !config.has_pushover_credentials ? "#1f3a3d" : "#6b7280",
-                borderColor: testState === "sent" ? "rgba(74,222,128,0.3)" : testState === "failed" ? "rgba(239,68,68,0.3)" : "rgba(75,85,99,0.2)",
-                background: testState === "sent" ? "rgba(74,222,128,0.06)" : testState === "failed" ? "rgba(239,68,68,0.06)" : "rgba(75,85,99,0.05)",
-              }}>
-              {testState === "sending" ? "Sending..." : testState === "sent" ? "Sent to phone" : testState === "failed" ? "Failed" : "Test Push"}
-            </button>
+              )
+            ) : (
+              <span style={{ color: "var(--fg-ghost)" }}>Off</span>
+            )}
+            <span style={{ color: "var(--fg-disabled)" }}>{expanded ? "▲" : "▼"}</span>
           </div>
         </div>
-      )}
-    </div>
+
+        {/* ── EXPANDED ── */}
+        {expanded && (
+          <div
+            className="px-4 pb-4 space-y-4"
+            style={{ borderTop: "1px solid var(--border-subtle)" }}
+          >
+            {/* Start / Stop button */}
+            <div className="pt-3 flex items-center gap-3 flex-wrap">
+              <button
+                onClick={handleStartStop}
+                disabled={starting}
+                className={
+                  "px-5 py-2 rounded-md border font-mono font-semibold tracking-wider uppercase transition-colors duration-150 " +
+                  "focus:outline-none focus-visible:[box-shadow:var(--ring-focus)] " +
+                  "disabled:opacity-40 disabled:cursor-not-allowed"
+                }
+                style={{
+                  fontSize: "11px",
+                  color: running ? "var(--danger-strong)" : "var(--accent)",
+                  background: running ? "var(--danger-soft)" : "var(--accent-soft)",
+                  borderColor: running ? "var(--danger-border)" : "var(--accent-border)",
+                }}
+              >
+                {starting ? "..." : running ? "Stop Monitoring" : "Start Monitoring"}
+              </button>
+              {error && (
+                <span className="font-mono" style={{ fontSize: "10px", color: "var(--danger-strong)" }}>
+                  {error}
+                </span>
+              )}
+              {!config.has_pushover_credentials && !running && (
+                <span className="font-mono" style={{ fontSize: "10px", color: "var(--warn-strong)" }}>
+                  Set PUSHOVER keys in .env first
+                </span>
+              )}
+            </div>
+
+            {/* Live dashboard — only when running */}
+            {running && (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+                <div
+                  className="rounded-md border px-3 py-2"
+                  style={{ borderColor: "var(--border-subtle)", background: "var(--bg-overlay)" }}
+                >
+                  <div className="font-mono uppercase tracking-wider" style={{ fontSize: "8px", color: "var(--fg-faint)" }}>
+                    Next Scan
+                  </div>
+                  <div
+                    className="font-mono font-bold mt-0.5"
+                    style={{ fontSize: "14px", color: countdownColor, fontVariantNumeric: "tabular-nums" }}
+                  >
+                    {fmtCountdown(countdown)}
+                  </div>
+                  <div className="font-mono mt-0.5" style={{ fontSize: "9px", color: "var(--fg-ghost)" }}>
+                    every {refreshMin}m
+                  </div>
+                </div>
+                <div
+                  className="rounded-md border px-3 py-2"
+                  style={{ borderColor: "var(--border-subtle)", background: "var(--bg-overlay)" }}
+                >
+                  <div className="font-mono uppercase tracking-wider" style={{ fontSize: "8px", color: "var(--fg-faint)" }}>
+                    API Budget
+                  </div>
+                  <div
+                    className="font-mono font-bold mt-0.5"
+                    style={{
+                      fontSize: "14px",
+                      color:
+                        pollsRemaining <= 3
+                          ? "var(--danger)"
+                          : pollsRemaining <= 10
+                            ? "var(--warn)"
+                            : "var(--fg-primary)",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {pollsRemaining}/{pollsMax}
+                  </div>
+                  <div className="font-mono mt-0.5" style={{ fontSize: "9px", color: "var(--fg-ghost)" }}>
+                    polls left today
+                  </div>
+                </div>
+                <div
+                  className="rounded-md border px-3 py-2"
+                  style={{ borderColor: "var(--border-subtle)", background: "var(--bg-overlay)" }}
+                >
+                  <div className="font-mono uppercase tracking-wider" style={{ fontSize: "8px", color: "var(--fg-faint)" }}>
+                    FD Events
+                  </div>
+                  <div
+                    className="font-mono font-bold mt-0.5"
+                    style={{ fontSize: "14px", color: "var(--fg-primary)", fontVariantNumeric: "tabular-nums" }}
+                  >
+                    {eventCount}
+                  </div>
+                  <div className="font-mono mt-0.5" style={{ fontSize: "9px", color: "var(--fg-ghost)" }}>
+                    scanned {lastScanAgo}
+                  </div>
+                </div>
+                <div
+                  className="rounded-md border px-3 py-2"
+                  style={{ borderColor: "var(--border-subtle)", background: "var(--bg-overlay)" }}
+                >
+                  <div className="font-mono uppercase tracking-wider" style={{ fontSize: "8px", color: "var(--fg-faint)" }}>
+                    Alerts Sent
+                  </div>
+                  <div
+                    className="font-mono font-bold mt-0.5"
+                    style={{
+                      fontSize: "14px",
+                      color: totalSent > 0 ? "var(--platform-polymarket)" : "var(--fg-ghost)",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {totalSent}
+                  </div>
+                  <div className="font-mono mt-0.5" style={{ fontSize: "9px", color: "var(--fg-ghost)" }}>
+                    {totalCycles} scans
+                  </div>
+                </div>
+                <div
+                  className="rounded-md border px-3 py-2"
+                  style={{ borderColor: "var(--border-subtle)", background: "var(--bg-overlay)" }}
+                >
+                  <div className="font-mono uppercase tracking-wider" style={{ fontSize: "8px", color: "var(--fg-faint)" }}>
+                    Last Scan
+                  </div>
+                  {lastCycle ? (
+                    <div className="flex flex-col gap-0.5 mt-1 font-mono" style={{ fontSize: "10px" }}>
+                      <span style={{ color: "var(--fg-muted)" }}>{lastCycle.candidates_evaluated ?? 0} evaluated</span>
+                      <span style={{ color: "var(--fg-muted)" }}>{lastCycle.filter_passed ?? 0} qualified</span>
+                      <span
+                        style={{
+                          color:
+                            (lastCycle.alerts_sent ?? 0) > 0
+                              ? "var(--platform-polymarket)"
+                              : "var(--fg-muted)",
+                        }}
+                      >
+                        {lastCycle.alerts_sent ?? 0} alerted
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="font-mono mt-1" style={{ fontSize: "10px", color: "var(--fg-ghost)" }}>
+                      waiting...
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── Preset selector ── */}
+            <div>
+              <div className="font-mono uppercase tracking-wider mb-2" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>
+                Preset
+              </div>
+              <div className="flex gap-2">
+                {PRESETS.map((p) => {
+                  const active = config.preset === p.value;
+                  return (
+                    <button
+                      key={p.value}
+                      onClick={() => save({ preset: p.value })}
+                      disabled={saving}
+                      className={
+                        "flex-1 px-3 py-2 rounded-md border text-left transition-colors duration-150 " +
+                        "focus:outline-none focus-visible:[box-shadow:var(--ring-focus)] " +
+                        "disabled:opacity-40 disabled:cursor-not-allowed"
+                      }
+                      style={{
+                        background: active ? "var(--accent-soft)" : "transparent",
+                        borderColor: active ? "var(--accent-border)" : "rgba(75,85,99,0.12)",
+                      }}
+                    >
+                      <div
+                        className="font-mono font-semibold"
+                        style={{ fontSize: "11px", color: active ? "var(--accent)" : "var(--fg-muted)" }}
+                      >
+                        {p.label}
+                      </div>
+                      <div
+                        className="font-mono mt-0.5 leading-relaxed"
+                        style={{ fontSize: "9px", color: "var(--fg-ghost)" }}
+                      >
+                        {p.desc}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* ── Settings ── */}
+            <div>
+              <div className="font-mono uppercase tracking-wider mb-2" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>
+                Settings
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2">
+                <div className="space-y-1">
+                  <label className="font-mono" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>Min EV</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      max="50"
+                      value={Math.round(config.min_ev * 100)}
+                      onChange={(e) => save({ min_ev: parseFloat(e.target.value) / 100 })}
+                      className={`w-full pl-2 pr-5 py-1 text-right ${iClass}`}
+                      style={iStyle}
+                    />
+                    <span
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 font-mono"
+                      style={{ fontSize: "10px", color: "var(--fg-ghost)" }}
+                    >
+                      %
+                    </span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="font-mono" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>Refresh every</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="5"
+                      min="5"
+                      max="60"
+                      value={config.refresh_interval_minutes}
+                      onChange={(e) => save({ refresh_interval_minutes: parseInt(e.target.value) || 15 })}
+                      className={`w-full pl-2 pr-7 py-1 text-right ${iClass}`}
+                      style={iStyle}
+                    />
+                    <span
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 font-mono"
+                      style={{ fontSize: "10px", color: "var(--fg-ghost)" }}
+                    >
+                      min
+                    </span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="font-mono" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>Cooldown</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="5"
+                      min="5"
+                      max="120"
+                      value={config.cooldown_minutes}
+                      onChange={(e) => save({ cooldown_minutes: parseInt(e.target.value) || 30 })}
+                      className={`w-full pl-2 pr-7 py-1 text-right ${iClass}`}
+                      style={iStyle}
+                    />
+                    <span
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 font-mono"
+                      style={{ fontSize: "10px", color: "var(--fg-ghost)" }}
+                    >
+                      min
+                    </span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="font-mono" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>Max alerts/hr</label>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    max="30"
+                    value={config.max_alerts_per_hour}
+                    onChange={(e) => save({ max_alerts_per_hour: parseInt(e.target.value) || 10 })}
+                    className={`w-full px-2 py-1 text-right ${iClass}`}
+                    style={iStyle}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* ── Platforms (alert allowlist; separate from scan-config Books toggles) ── */}
+            <div className="flex items-center gap-4 flex-wrap">
+              <span className="font-mono" style={{ fontSize: "10px", color: "var(--fg-faint)" }}>Platforms</span>
+              {["polymarket", "kalshi"].map((p) => (
+                <label
+                  key={p}
+                  className="flex items-center gap-1 font-mono cursor-pointer"
+                  style={{
+                    fontSize: "11px",
+                    color: config.platforms.includes(p) ? "var(--fg-primary)" : "var(--fg-faint)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={config.platforms.includes(p)}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                        ? [...config.platforms, p]
+                        : config.platforms.filter((x) => x !== p);
+                      if (next.length > 0) save({ platforms: next });
+                    }}
+                    className="w-3 h-3 rounded accent-teal-400 focus:outline-none focus-visible:[box-shadow:var(--ring-focus)]"
+                  />
+                  {p === "polymarket" ? "Polymarket" : "Kalshi"}
+                </label>
+              ))}
+            </div>
+
+            {/* ── Notifications mode (dry-run vs LIVE) ── */}
+            <div
+              className="rounded-md border p-3 flex items-center justify-between gap-3 flex-wrap"
+              style={{
+                background: liveActive ? "var(--danger-soft)" : "var(--bg-overlay)",
+                borderColor: liveActive ? "var(--danger-border)" : "var(--border-subtle)",
+                borderRadius: "var(--radius-md)",
+                boxShadow: liveActive ? "var(--glow-danger)" : undefined,
+              }}
+            >
+              <div className="min-w-0">
+                <p
+                  className="font-mono uppercase tracking-wider font-semibold"
+                  style={{
+                    fontSize: "10px",
+                    color: liveActive ? "var(--danger-strong)" : "var(--fg-secondary)",
+                  }}
+                >
+                  Notifications mode
+                </p>
+                <p
+                  className="font-mono mt-0.5 leading-relaxed"
+                  style={{
+                    fontSize: "11px",
+                    color: liveActive ? "var(--danger-strong)" : "var(--fg-secondary)",
+                  }}
+                >
+                  {config.dry_run
+                    ? "Dry-run — payloads logged to backend; never sent to your phone."
+                    : "LIVE — real Pushover alerts fire on every BUY that passes the rule engine."}
+                </p>
+              </div>
+              <Toggle
+                checked={!config.dry_run}
+                dangerWhen={true}
+                size="md"
+                label={config.dry_run ? "Live alerts" : "LIVE"}
+                onCheckedChange={handleNotificationToggle}
+              />
+            </div>
+
+            {/* ── Footer: Pushover credential status + Test Push ── */}
+            <div
+              className="flex items-center justify-between gap-3 pt-2 flex-wrap"
+              style={{ borderTop: "1px solid var(--border-subtle)" }}
+            >
+              <div className="font-mono" style={{ fontSize: "10px", color: "var(--fg-ghost)" }}>
+                {config.has_pushover_credentials ? (
+                  <span style={{ color: "var(--fg-faint)" }}>Pushover connected</span>
+                ) : (
+                  <span>
+                    Set PUSHOVER_USER_KEY + PUSHOVER_API_TOKEN in .env &mdash;{" "}
+                    <a
+                      href="https://pushover.net"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline focus:outline-none focus-visible:[box-shadow:var(--ring-focus)]"
+                      style={{ color: "var(--fg-faint)" }}
+                    >
+                      pushover.net
+                    </a>
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <span
+                  className="font-mono italic"
+                  style={{ fontSize: "10px", color: "var(--warn-strong)" }}
+                  title="POST /api/monitor/test bypasses dry_run by design"
+                >
+                  Sends a real Pushover, even in dry-run
+                </span>
+                <button
+                  onClick={handleTest}
+                  disabled={testState === "sending" || !config.has_pushover_credentials}
+                  className={
+                    "px-3 py-1 rounded-md border font-mono uppercase tracking-wider transition-colors duration-150 " +
+                    "focus:outline-none focus-visible:[box-shadow:var(--ring-focus)] " +
+                    "disabled:opacity-40 disabled:cursor-not-allowed"
+                  }
+                  style={{
+                    fontSize: "10px",
+                    color:
+                      testState === "sent"
+                        ? "var(--success)"
+                        : testState === "failed"
+                          ? "var(--danger-strong)"
+                          : !config.has_pushover_credentials
+                            ? "var(--fg-disabled)"
+                            : "var(--warn-strong)",
+                    borderColor:
+                      testState === "sent"
+                        ? "var(--success-border)"
+                        : testState === "failed"
+                          ? "var(--danger-border)"
+                          : "var(--warn-border)",
+                    background:
+                      testState === "sent"
+                        ? "var(--success-soft)"
+                        : testState === "failed"
+                          ? "var(--danger-soft)"
+                          : "var(--warn-soft)",
+                  }}
+                >
+                  {testState === "sending"
+                    ? "Sending..."
+                    : testState === "sent"
+                      ? "Sent to phone"
+                      : testState === "failed"
+                        ? "Failed"
+                        : "Send Test Push"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={confirmLiveOpen}
+        title="Enable LIVE Pushover alerts?"
+        description={
+          <div className="space-y-2">
+            <p>
+              Real Pushover notifications will fire on your phone for every BUY
+              opportunity that passes the rule engine.
+            </p>
+            <p>
+              Rate limits still apply: alerts are gated by your cooldown
+              ({config.cooldown_minutes}m) and hourly cap
+              ({config.max_alerts_per_hour}/hr).
+            </p>
+            <p>
+              You can return to Dry-run any time. The Send Test Push button is
+              independent of this setting — it always sends a real Pushover.
+            </p>
+          </div>
+        }
+        confirmLabel="Enable Live Alerts"
+        confirmVariant="danger"
+        cancelLabel="Stay in Dry-run"
+        onCancel={() => setConfirmLiveOpen(false)}
+        onConfirm={async () => {
+          setConfirmLiveOpen(false);
+          await save({ dry_run: false });
+        }}
+      />
+    </>
   );
 }
