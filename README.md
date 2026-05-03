@@ -2,6 +2,15 @@
 
 Cross-platform EV scanner for prediction market opportunities. Compares prices on Polymarket and Kalshi against FanDuel sportsbook odds to find mispriced markets, with phone push notifications for new opportunities.
 
+> **Current operating defaults (validated):**
+> - **Books**: Kalshi enabled, Polymarket disabled. Polymarket is opt-in via the dashboard "Books" toggles or `POST /api/scan/config`.
+> - **Alerts**: monitor scheduler off; defaults to `dry_run=true` and `MonitorConfig.platforms=["kalshi"]` when started. Live Pushover alerts stay off until at least one organic dry-run BUY payload has been observed.
+> - **Player props**: disabled (`enable_props=False`) — full pipeline exists but gated.
+> - **Soccer 3-way safety**: matches with no published FanDuel Draw odds are SKIPped at the feature layer; phantom EV from 2-way-devig fallback cannot occur.
+> - **Pushover credential check**: `POST /api/monitor/test` sends a real Pushover **even when `dry_run=true`**. It is the deliberate credential-verification path; don't call it unless you want a real notification on your phone.
+>
+> See `MANUAL_TESTING_RUNBOOK.md` for the safe operating procedure and `PROJECT_CONTEXT.md` for full architecture context.
+
 ## Quick Start
 
 ### Prerequisites
@@ -92,21 +101,32 @@ Every opportunity goes through a two-pass evaluation:
 
 ## Phone Alerts
 
-The monitoring system scans for new BUY opportunities on a configurable interval and sends instant push notifications to your phone via Pushover.
+The monitoring system scans for new BUY opportunities on a configurable interval and sends push notifications via Pushover. **Default state is `dry_run=true`** — the scheduler logs payloads to the backend instead of sending them. Live alerts are gated; see "Going live" below.
 
 ### Setup
 
 1. Create a [Pushover](https://pushover.net/) account and install the app on your phone
 2. Add your user key and app token to `backend/.env`
 3. Open the dashboard and expand the **Phone Alerts** panel
-4. Choose a preset or customize settings
-5. Press **Start Monitoring**
+4. Choose a preset (Conservative recommended for first runs)
+5. Confirm the config shows `dry_run=true` before pressing **Start Monitoring**
+6. Optional credential check (sends one real notification): `POST /api/monitor/test` — this endpoint **bypasses `dry_run` by design** and verifies your Pushover keys end-to-end. It does not start the scheduler or change config.
 
 ### How Alerts Work
 
-- The system scans all platforms on your configured refresh interval (default: every 15 minutes)
-- When a new BUY opportunity is found, you get an instant push notification with the event, side, EV%, price, and a link to the platform
-- **Cooldown** prevents the same opportunity from buzzing your phone repeatedly. Once you're alerted about "Alcaraz +6.2% EV", that specific opportunity is silenced for the cooldown window (default: 30 minutes). If the edge improves significantly (3%+), it breaks through the cooldown because that's new actionable information. Different opportunities always alert immediately.
+- The system scans the enabled books (default Kalshi only) on the configured refresh interval (Conservative: every 30 minutes; WS-driven re-evaluations on price moves with 10s debounce)
+- When a new BUY opportunity is found, the AlertManager builds a payload with the event, side, EV%, price, FanDuel odds, true probability, Kelly, and a deep link to the platform. In dry-run mode the payload is logged as `[DRY RUN] Would send: …` instead of sent.
+- **Cooldown** prevents the same opportunity from buzzing your phone repeatedly. Once alerted about "Alcaraz +6.2% EV", that specific opportunity is silenced for the cooldown window (Conservative default: 60 minutes). Edge improvement ≥3% breaks through cooldown.
+- **Hourly cap** limits the maximum number of alerts per rolling hour (Conservative: 5).
+- Soccer 3-way matches with no FanDuel Draw odds SKIP at the feature layer and never reach AlertManager.
+
+### Going live (gated)
+
+Live alerts (`dry_run=false`) should remain off until:
+1. At least one organic dry-run BUY payload has been logged so you can verify the format and deep link.
+2. Manual spot-check on the platform of every flagged BUY's price, FD odds, and game timing.
+
+When ready: `POST /api/monitor/config {"dry_run": false}` while keeping Conservative + Kalshi-only. See `MANUAL_TESTING_RUNBOOK.md` section 9 for the full procedure.
 
 ### Presets
 
@@ -122,13 +142,35 @@ The Odds API free tier allows 500 requests/month. Each scan uses ~5 requests (on
 
 ## Supported Sports
 
-| Sport | Odds API | Polymarket | Kalshi |
-|-------|----------|------------|--------|
-| Tennis | All ATP/WTA | H2H | H2H |
-| Cricket IPL | H2H | H2H | H2H |
-| Rugby NRL | H2H | H2H | H2H |
-| UFL | H2H | -- | H2H |
-| Hockey AHL | H2H | H2H | H2H |
+The full list is the source of truth in `backend/services/sports_config.py`.
+Sport availability depends on whether FanDuel publishes odds via the Odds API
+on a given day; soccer rows additionally require FD draw odds (see soccer
+guard below).
+
+US team sports (2-way h2h):
+- NBA, WNBA
+- MLB
+- NHL, AHL
+- NFL, UFL
+- Tennis (ATP/WTA tournaments)
+- UFC / MMA
+- Cricket IPL
+- Rugby NRL
+- AFL
+- KBO
+
+Soccer (3-way h2h: home / away / draw):
+- MLS
+- EPL
+- Bundesliga
+- La Liga
+- Serie A
+- Ligue 1
+- UEFA Champions League
+
+> Soccer rows with no FanDuel `Draw` odds are SKIPped at the feature layer
+> via `NO_BOOKMAKER_DATA` to prevent 2-way-devig phantom EV. This is a
+> safety guard, not a configuration choice.
 
 ## Project Structure
 
@@ -193,12 +235,23 @@ masg-ev-tool/
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/opportunities` | Matched opportunities with edge/kelly/status |
-| `GET /api/opportunities?min_edge=0.03` | Filter by minimum edge (3%) |
-| `GET /api/opportunities?platform=kalshi` | Filter by platform |
+| `GET /api/opportunities` | Matched opportunities with edge/kelly/status (cold-start runs pipeline once) |
+| `GET /api/opportunities/snapshot` | Read latest snapshot (never triggers pipeline; 204 if empty) |
+| `GET /api/opportunities/status` | Lightweight status, refresh metadata, error state |
+| `POST /api/opportunities/refresh` | Trigger background pipeline run (returns 202 immediately) |
+| `GET /api/opportunities?platform=kalshi` | Filter by platform (view-only) |
 | `GET /api/opportunities/policy` | Current rule policy table |
-| `GET /api/opportunities/history` | Price history for a market |
+| `GET /api/opportunities/history` | Price history for a market (CLV) |
 | `GET /api/opportunities/debug` | Full pipeline diagnostic trace |
+
+### Scan / Books
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/scan/config` | GET | Per-sport + per-platform scan config + cache state |
+| `/api/scan/config` | POST | Update scan config (sports / platforms / quota) |
+| `/api/data-status` | GET | Per-sport per-book data freshness matrix |
+| `/api/sports` | GET | Static sport registry |
 
 ### Monitoring
 
@@ -210,11 +263,14 @@ masg-ev-tool/
 | `/api/monitor/stop` | POST | Stop monitoring loop |
 | `/api/monitor/status` | GET | Live status, countdown, API budget |
 | `/api/monitor/history` | GET | Recent alert history |
-| `/api/monitor/test` | POST | Send test push notification |
+| `/api/monitor/test` | POST | Send a real Pushover test notification — **bypasses `dry_run`** |
 
 ## Configuration
 
-Engine thresholds (query parameters on `/api/opportunities`):
+Engine thresholds live in `backend/services/engine_config.py`. Per-sport
+overrides (e.g. tighter `max_date_delta_hours` for liquid team sports,
+sport-specific `max_plausible_edge` caps) live in
+`backend/services/sports_config.py`. Default values:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -223,8 +279,11 @@ Engine thresholds (query parameters on `/api/opportunities`):
 | `survival_threshold` | 0.85 | Match confidence below this = SKIP |
 | `buy_threshold` | 0.90 | Match confidence below this = WATCH |
 | `min_true_probability` | 0.40 | Devigged probability floor |
+| `max_date_delta_hours` | 72.0 (12.0 for team sports) | Max time gap between platform market and FD event |
 
-To add a new sport, edit `backend/services/sports_config.py`.
+To add a new sport, edit `backend/services/sports_config.py`. To toggle
+which platforms are scanned, use the dashboard "Books" toggles or
+`POST /api/scan/config`.
 
 ## Tests
 
@@ -234,4 +293,9 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-204 tests covering policy rules, normalization edge cases, feature extraction, and ambiguity detection.
+The full backend suite covers policy rules, normalization, feature
+extraction, ambiguity detection, soccer alignment + missing-draw guard,
+platform toggles, snapshot lifecycle / background refresh, scheduler /
+manual refresh lock alignment, Polymarket CLOB book parsing, and Kalshi
+adapter behaviors. Run `pytest tests/` to see the current passing count;
+all suites should be green on `main`.

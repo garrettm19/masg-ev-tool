@@ -205,6 +205,17 @@ WATCH and SKIP opportunities should not trigger live alerts.
 
 Ambiguity-downgraded opportunities should remain excluded when configured.
 
+`POST /api/monitor/test` **bypasses `dry_run`** by design and sends a real Pushover. Do not call it casually. It is reserved for explicit credential / delivery verification when Mason asks.
+
+Live alerts (`dry_run=false` in production cycles) should remain off until at least one organic dry-run BUY payload has been observed in the backend log (`[DRY RUN] Would send: …` for a real opportunity). Verify payload format and deep-link content before flipping live.
+
+The current scan/alert defaults are Kalshi-only:
+- `ScanConfig.platforms`: kalshi enabled, polymarket disabled.
+- `MonitorConfig.platforms`: `["kalshi"]`.
+Polymarket is opt-in via the dashboard "Books" toggle or `POST /api/scan/config`. Do not flip Polymarket on without Mason's explicit instruction. Keep the alert allowlist (`MonitorConfig.platforms`) aligned with the scan allowlist.
+
+For soccer (3-way markets), candidates with `fd.draw_odds=None` are SKIPped at the feature layer via `NO_BOOKMAKER_DATA` to prevent 2-way-devig phantom EV. Do not bypass this guard. If extending to other 3-way sports, add them to `_is_three_way_sport` rather than removing the check.
+
 ---
 
 ## Secrets and Credentials
