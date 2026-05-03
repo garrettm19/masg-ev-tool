@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { StatusPill, type StatusPillTone } from "../ui/StatusPill";
 
 interface StatusStripProps {
   // Refresh state
@@ -37,48 +38,13 @@ function fmtElapsed(startedAt: number): string {
   return `${s}s`;
 }
 
-interface PillProps {
+interface PillSpec {
   label: string;
   value: string;
-  tone?: "neutral" | "active" | "warn" | "danger" | "ok" | "muted";
+  tone?: StatusPillTone;
   pulse?: boolean;
   title?: string;
   detail?: string | null;
-}
-
-function Pill({ label, value, tone = "neutral", pulse = false, title, detail }: PillProps) {
-  const tones: Record<string, { dot: string; text: string; bg: string; border: string }> = {
-    neutral: { dot: "#64748b", text: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.2)" },
-    active:  { dot: "#f59e0b", text: "#fbbf24", bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.3)" },
-    warn:    { dot: "#f59e0b", text: "#fbbf24", bg: "rgba(245,158,11,0.05)", border: "rgba(245,158,11,0.2)" },
-    danger:  { dot: "#f87171", text: "#fca5a5", bg: "rgba(248,113,113,0.06)", border: "rgba(248,113,113,0.3)" },
-    ok:      { dot: "#4ade80", text: "#86efac", bg: "rgba(74,222,128,0.05)", border: "rgba(74,222,128,0.2)" },
-    muted:   { dot: "#374151", text: "#4b5563", bg: "rgba(55,65,81,0.05)", border: "rgba(55,65,81,0.2)" },
-  };
-  const t = tones[tone];
-  return (
-    <div
-      className="flex items-center gap-2 px-3 py-1.5 rounded-md border"
-      style={{ background: t.bg, borderColor: t.border }}
-      title={title}
-    >
-      <span
-        className={`w-1.5 h-1.5 rounded-full ${pulse ? "animate-pulse" : ""}`}
-        style={{ background: t.dot, boxShadow: pulse ? `0 0 6px ${t.dot}` : "none" }}
-      />
-      <span className="font-mono text-[8px] tracking-[0.18em] uppercase" style={{ color: "#4b5563" }}>
-        {label}
-      </span>
-      <span className="font-mono text-[10px] font-semibold" style={{ color: t.text }}>
-        {value}
-      </span>
-      {detail != null && detail !== "" && (
-        <span className="font-mono text-[9px]" style={{ color: "#4b5563" }}>
-          · {detail}
-        </span>
-      )}
-    </div>
-  );
 }
 
 export function StatusStrip(props: StatusStripProps) {
@@ -90,7 +56,7 @@ export function StatusStrip(props: StatusStripProps) {
   }, []);
 
   // --- Scan pill ---
-  let scanPill: PillProps;
+  let scanPill: PillSpec;
   if (props.lastRefreshError) {
     scanPill = {
       label: "Scan",
@@ -103,7 +69,7 @@ export function StatusStrip(props: StatusStripProps) {
     scanPill = {
       label: "Scan",
       value: "Refreshing",
-      tone: "active",
+      tone: "warn",
       pulse: true,
       detail: props.refreshStartedAt ? `${fmtElapsed(props.refreshStartedAt)} elapsed` : null,
     };
@@ -111,8 +77,11 @@ export function StatusStrip(props: StatusStripProps) {
     scanPill = {
       label: "Scan",
       value: fmtAgo(props.updatedAt),
-      tone: "ok",
-      detail: props.lastRefreshDuration != null ? `${props.lastRefreshDuration.toFixed(0)}s last scan` : null,
+      tone: "success",
+      detail:
+        props.lastRefreshDuration != null
+          ? `${props.lastRefreshDuration.toFixed(0)}s last scan`
+          : null,
     };
   } else {
     scanPill = { label: "Scan", value: "Idle", tone: "muted" };
@@ -122,9 +91,14 @@ export function StatusStrip(props: StatusStripProps) {
   const enabledBooks = Object.entries(props.platformEnabled)
     .filter(([, v]) => v)
     .map(([k]) => props.platformLabels[k] ?? k);
-  let booksPill: PillProps;
+  let booksPill: PillSpec;
   if (enabledBooks.length === 0) {
-    booksPill = { label: "Books", value: "None", tone: "danger", title: "Enable at least one book to scan" };
+    booksPill = {
+      label: "Books",
+      value: "None",
+      tone: "danger",
+      title: "Enable at least one book to scan",
+    };
   } else if (props.platformEnabled.polymarket) {
     booksPill = {
       label: "Books",
@@ -134,11 +108,11 @@ export function StatusStrip(props: StatusStripProps) {
       detail: "PM opt-in",
     };
   } else {
-    booksPill = { label: "Books", value: enabledBooks.join(" + "), tone: "ok" };
+    booksPill = { label: "Books", value: enabledBooks.join(" + "), tone: "success" };
   }
 
   // --- Alerts pill ---
-  let alertsPill: PillProps;
+  let alertsPill: PillSpec;
   if (props.monitorRunning && !props.monitorDryRun) {
     alertsPill = {
       label: "Alerts",
@@ -146,7 +120,7 @@ export function StatusStrip(props: StatusStripProps) {
       tone: "danger",
       pulse: true,
       title: "Live Pushover alerts are active",
-      detail: props.monitorPreset ? props.monitorPreset : null,
+      detail: props.monitorPreset ?? null,
     };
   } else if (props.monitorRunning && props.monitorDryRun) {
     alertsPill = {
@@ -155,7 +129,7 @@ export function StatusStrip(props: StatusStripProps) {
       tone: "warn",
       pulse: true,
       title: "Monitor running, payloads logged not sent",
-      detail: props.monitorPreset ? props.monitorPreset : null,
+      detail: props.monitorPreset ?? null,
     };
   } else if (props.monitorDryRun) {
     alertsPill = {
@@ -174,28 +148,35 @@ export function StatusStrip(props: StatusStripProps) {
   }
 
   // --- Props pill ---
-  const propsPill: PillProps = props.propsEnabled
+  const propsPill: PillSpec = props.propsEnabled
     ? { label: "Props", value: "On", tone: "warn" }
     : { label: "Props", value: "Off", tone: "muted" };
 
   return (
     <div
       className="flex flex-wrap items-center gap-2 px-4 py-2.5 rounded-lg border"
-      style={{ background: "#0c1315", borderColor: "rgba(19,78,74,0.35)" }}
+      style={{
+        background: "var(--bg-surface)",
+        borderColor: "var(--border-default)",
+      }}
     >
-      <Pill {...scanPill} />
-      <Pill {...booksPill} />
-      <Pill {...alertsPill} />
-      <Pill {...propsPill} />
+      <StatusPill {...scanPill} />
+      <StatusPill {...booksPill} />
+      <StatusPill {...alertsPill} />
+      <StatusPill {...propsPill} />
       {props.monitorPreset && props.monitorMinEv != null && (
         <div
           className="ml-auto flex items-center gap-3 font-mono text-[9px]"
-          style={{ color: "#4b5563" }}
+          style={{ color: "var(--fg-faint)" }}
           title="Active monitor preset settings"
         >
           <span>min EV {(props.monitorMinEv * 100).toFixed(1)}%</span>
-          {props.monitorCooldownMin != null && <span>· cooldown {props.monitorCooldownMin}m</span>}
-          {props.monitorMaxPerHour != null && <span>· max {props.monitorMaxPerHour}/hr</span>}
+          {props.monitorCooldownMin != null && (
+            <span>· cooldown {props.monitorCooldownMin}m</span>
+          )}
+          {props.monitorMaxPerHour != null && (
+            <span>· max {props.monitorMaxPerHour}/hr</span>
+          )}
         </div>
       )}
     </div>
