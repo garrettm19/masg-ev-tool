@@ -39,9 +39,15 @@ class ScanConfigResponse(BaseModel):
     platforms: dict[str, PlatformScanOut]
     global_max_odds_api_per_day: int
     odds_cache: dict[str, dict]
+    # Read-only mirror of EngineConfig.enable_props so the dashboard's
+    # status strip reflects the authoritative backend flag instead of a
+    # hardcoded value. Toggling props remains a code-level change; this
+    # field has no setter on /api/scan/config.
+    props_enabled: bool
 
 
 def _build_response() -> ScanConfigResponse:
+    from services.opportunities import DEFAULT_CONFIG
     cfg = get_scan_config()
     return ScanConfigResponse(
         sports={
@@ -54,6 +60,7 @@ def _build_response() -> ScanConfigResponse:
         },
         global_max_odds_api_per_day=cfg.global_max_odds_api_per_day,
         odds_cache=cache_status(),
+        props_enabled=DEFAULT_CONFIG.enable_props,
     )
 
 

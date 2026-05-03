@@ -85,6 +85,9 @@ export function DashboardClient({ initialData }: Props) {
     kalshi: "Kalshi",
     polymarket: "Polymarket",
   });
+  // Mirror of EngineConfig.enable_props sourced from /api/scan/config.
+  // Read-only: there is no UI control to flip props from the dashboard.
+  const [propsEnabled, setPropsEnabled] = useState<boolean>(false);
   useEffect(() => {
     fetchScanConfig()
       .then((cfg) => {
@@ -97,6 +100,9 @@ export function DashboardClient({ initialData }: Props) {
         if (Object.keys(enabled).length > 0) {
           setPlatformEnabled(enabled);
           setPlatformLabels(labels);
+        }
+        if (typeof cfg.props_enabled === "boolean") {
+          setPropsEnabled(cfg.props_enabled);
         }
       })
       .catch(() => {});
@@ -303,7 +309,7 @@ export function DashboardClient({ initialData }: Props) {
         monitorMinEv={monitorMinEv}
         monitorCooldownMin={monitorCooldownMin}
         monitorMaxPerHour={monitorMaxPerHour}
-        propsEnabled={false}
+        propsEnabled={propsEnabled}
       />
 
       {/* Toolbar */}

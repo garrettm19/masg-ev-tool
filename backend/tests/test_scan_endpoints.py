@@ -207,3 +207,41 @@ class TestPlatformsInScanConfigEndpoint:
         body = client.get("/api/scan/config").json()
         assert body["platforms"]["kalshi"]["enabled"] is True
         assert body["platforms"]["polymarket"]["enabled"] is False
+
+
+class TestPropsEnabledExposedReadOnly:
+    """`props_enabled` mirrors EngineConfig.enable_props for the dashboard's
+    status strip. It is read-only: there is no setter via /scan/config.
+    Toggling props remains a deliberate code-level change."""
+
+    def test_get_includes_props_enabled_default_false(self):
+        body = client.get("/api/scan/config").json()
+        assert "props_enabled" in body
+        assert body["props_enabled"] is False
+
+    def test_get_returns_bool_type(self):
+        body = client.get("/api/scan/config").json()
+        assert isinstance(body["props_enabled"], bool)
+
+    def test_post_with_props_enabled_payload_is_ignored(self):
+        """Sending props_enabled in a POST must NOT flip the flag.
+        update_scan_config silently ignores unknown top-level keys."""
+        resp = client.post(
+            "/api/scan/config",
+            json={"props_enabled": True},
+        )
+        assert resp.status_code == 200
+        # Field is still false — write attempt was ignored
+        assert resp.json()["props_enabled"] is False
+        # And persists across a fresh GET
+        body = client.get("/api/scan/config").json()
+        assert body["props_enabled"] is False
+
+    def test_props_enabled_unchanged_by_other_updates(self):
+        client.post(
+            "/api/scan/config",
+            json={"sports": {"tennis": {"enabled": False}},
+                  "platforms": {"polymarket": {"enabled": True}}},
+        )
+        body = client.get("/api/scan/config").json()
+        assert body["props_enabled"] is False

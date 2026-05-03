@@ -141,6 +141,9 @@ export interface ScanConfigResponse {
   platforms: Record<string, PlatformScanConfig>;
   global_max_odds_api_per_day: number;
   odds_cache: Record<string, Record<string, unknown>>;
+  // Read-only mirror of EngineConfig.enable_props. Optional for backwards
+  // compatibility with older backends that don't return the field.
+  props_enabled?: boolean;
 }
 
 export interface SnapshotStatus {
