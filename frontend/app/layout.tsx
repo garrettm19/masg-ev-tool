@@ -1,10 +1,23 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import Link from "next/link";
 import { NavWalletButton } from "./components/dashboard/NavWalletButton";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"] });
+// Inter for UI text. Google Sans / Google Sans Flex are not yet exposed via
+// next/font/google as of Next 15.x; using Inter (variable font, OFL) as the
+// safe long-term fallback. Switch to "Google_Sans_Flex" when next/font/google
+// adds it. JetBrains Mono provides tabular numerals for the data columns.
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-sans",
+  display: "swap",
+});
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "MasG EV Tool",
@@ -15,8 +28,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body
-        className={`${inter.className} min-h-screen`}
-        style={{ background: "#07090a", color: "#e2e8f0" }}
+        className={`${inter.variable} ${jetbrainsMono.variable} min-h-screen antialiased`}
+        style={{ background: "#07090a", color: "#e2e8f0", fontFamily: "var(--font-sans)" }}
       >
         <header
           className="h-12 flex items-center px-6 border-b"

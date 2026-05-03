@@ -11,6 +11,7 @@ import { MarketDetailPanel } from "./MarketDetailPanel";
 import { TrackedPositions } from "./TrackedPositions";
 import { NotificationSettings, useMonitorState } from "./NotificationSettings";
 import { DataStatus } from "./DataStatus";
+import { StatusStrip } from "./StatusStrip";
 
 interface Props {
   initialData: OpportunitiesResponse | null;
@@ -279,9 +280,32 @@ export function DashboardClient({ initialData }: Props) {
   const monitorRunning = monitor.status?.running ?? false;
   const monitorEnabled = monitor.config?.enabled ?? false;
   const alertsSent = monitor.status?.total_alerts_sent ?? 0;
+  const monitorDryRun = monitor.config?.dry_run ?? true;
+  const monitorPreset = monitor.config?.preset ?? null;
+  const monitorMinEv = monitor.config?.min_ev ?? null;
+  const monitorCooldownMin = monitor.config?.cooldown_minutes ?? null;
+  const monitorMaxPerHour = monitor.config?.max_alerts_per_hour ?? null;
 
   return (
     <main className="max-w-[1600px] mx-auto px-6 py-5 space-y-3">
+      <StatusStrip
+        isRefreshing={scanning || backendRefreshing}
+        refreshStartedAt={refreshStartedAt}
+        updatedAt={updatedAt}
+        lastRefreshDuration={lastRefreshDuration}
+        lastRefreshError={lastRefreshError}
+        platformEnabled={platformEnabled}
+        platformLabels={platformLabels}
+        monitorRunning={monitorRunning}
+        monitorEnabled={monitorEnabled}
+        monitorDryRun={monitorDryRun}
+        monitorPreset={monitorPreset}
+        monitorMinEv={monitorMinEv}
+        monitorCooldownMin={monitorCooldownMin}
+        monitorMaxPerHour={monitorMaxPerHour}
+        propsEnabled={false}
+      />
+
       {/* Toolbar */}
       <div
         className="flex items-center justify-between px-4 py-2.5 rounded-lg border"

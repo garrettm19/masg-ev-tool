@@ -314,8 +314,16 @@ export function OpportunitiesTable({ opportunities, selectedId, onSelect, bankro
                     <td className="px-3 py-3 text-center">
                       <div className="inline-flex items-center gap-1">
                         <span
-                          className="inline-block font-mono text-[9px] tracking-wider px-2.5 py-1 rounded-md border font-medium"
-                          style={{ color: ss.color, background: ss.bg, borderColor: ss.border }}
+                          className={`inline-block font-mono text-[9px] tracking-wider px-2.5 py-1 rounded-md border ${opp.status === "BUY" ? "font-bold" : "font-medium"}`}
+                          style={{
+                            color: ss.color,
+                            background: ss.bg,
+                            borderColor: ss.border,
+                            // WATCH = non-actionable; a dashed border communicates "not a BUY".
+                            borderStyle: opp.status === "WATCH" ? "dashed" : "solid",
+                            opacity: opp.status === "WATCH" ? 0.85 : 1,
+                          }}
+                          title={opp.status === "WATCH" ? "Watch only — not actionable. A downgrade rule failed." : opp.status === "BUY" ? "All rules pass — actionable per your criteria" : "Skipped — a critical rule failed"}
                         >
                           {opp.status}
                         </span>

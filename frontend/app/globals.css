@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: var(--font-sans), system-ui, sans-serif;
+  --font-mono: var(--font-mono), ui-monospace, "JetBrains Mono", "Geist Mono", monospace;
+}
+
+/* Use tabular numerals on every monospaced data column so digits align
+   regardless of glyph width. Applies anywhere `font-mono` is used. */
+.font-mono,
+[class*="font-mono"] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "ss01" 1;
+}
+
 .nav-link:hover { color: #2dd4bf; }
 
 ::selection {
