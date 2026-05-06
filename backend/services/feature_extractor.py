@@ -15,6 +15,7 @@ from services.adapters.base import NormalizedMarket
 from services.devig import devig_multiplicative, devig_3way
 from services.engine_config import EngineConfig
 from services.normalizer import normalize_name, last_name, tokenize
+from services import odds_cache
 from services.odds_provider import TennisOddsEvent
 from services.rule_engine import MarketFeatures
 
@@ -705,6 +706,7 @@ def _base_features(
         bid_ask_spread=market.bid_ask_spread,
         # Staleness tracking
         price_fetched_at=market.fetched_at,
+        fd_fetched_at=odds_cache.get_fetched_at(event.sport_key),
         # Metadata quality
         has_end_date=bool(market.end_date),
         has_outcome_prices=bool(market.outcome_prices and len(market.outcome_prices) >= 2),

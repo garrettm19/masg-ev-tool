@@ -121,6 +121,7 @@ class MarketFeatures:
 
     # Staleness tracking
     price_fetched_at: float = 0.0      # when platform price was obtained
+    fd_fetched_at: float = 0.0         # when FanDuel odds were obtained (for maker FD-staleness gate)
 
     # Observability: normalized player tokens (for debugging)
     home_tokens: tuple[str, ...] = ()

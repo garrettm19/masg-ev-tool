@@ -74,6 +74,12 @@ def invalidate_all() -> int:
     return count
 
 
+def get_fetched_at(sport_key: str) -> float:
+    """Return the cache fetched_at for a sport key, or 0.0 if not cached."""
+    entry = _cache.get(sport_key)
+    return entry.fetched_at if entry else 0.0
+
+
 def cache_status() -> dict[str, dict]:
     """Return cache state for each sport key — for diagnostics."""
     now = time.time()
