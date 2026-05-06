@@ -5,10 +5,23 @@ Connects to the Kalshi WebSocket for real-time orderbook updates
 on watched market tickers.
 
 Endpoint: wss://api.elections.kalshi.com/trade-api/ws/v2
-Auth: Requires API key via initial auth message.
+Auth: Requires API key via Authorization header.
 
-Subscribes to orderbook channels for specific market tickers and
-triggers re-evaluation when best-ask prices change.
+Subscribes to the orderbook channel and maintains a per-ticker book
+of resting bids on each side.  Kalshi publishes resting bids on each
+side of the book:
+  - yes  → list of [price_cents, qty] for YES bids
+  - no   → list of [price_cents, qty] for NO bids
+
+The best YES bid is the highest YES bid:
+    best_yes_bid_cents = max(yes_bid_prices_cents)
+
+The best YES ask is the implied complement of the highest NO bid:
+    best_yes_ask_cents = 100 - max(no_bid_prices_cents)
+
+A NO bid at 43¢ implies a YES ask at 57¢, because filling that NO bid
+is economically equivalent to selling YES at 57¢.  Triggers
+re-evaluation when the synthesized best YES ask changes meaningfully.
 """
 from __future__ import annotations
 
@@ -32,7 +45,8 @@ class KalshiWsConsumer:
     WebSocket consumer for Kalshi real-time orderbook updates.
 
     Authenticates with API key, subscribes to specific market tickers,
-    and calls on_price_change when best-ask changes meaningfully.
+    maintains a per-ticker resting-bid book on each side, and calls
+    on_price_change when the synthesized best YES ask changes meaningfully.
     """
 
     def __init__(
@@ -49,6 +63,10 @@ class KalshiWsConsumer:
         self._authenticated = False
         self._last_message_ts: float = 0.0
         self._reconnect_count: int = 0
+        # Per-ticker resting-bid book.  Each ticker holds two side maps,
+        # {price_cents: qty} with qty > 0.  Snapshots replace the maps;
+        # deltas update one level at a time.
+        self._books: dict[str, dict[str, dict[int, int]]] = {}
 
     def watch(self, tickers: set[str]) -> None:
         """Set market tickers to watch."""
@@ -58,6 +76,7 @@ class KalshiWsConsumer:
     def unwatch_all(self) -> None:
         self._watched_tickers.clear()
         self._last_prices.clear()
+        self._books.clear()
 
     async def run_loop(
         self,
@@ -141,31 +160,74 @@ class KalshiWsConsumer:
     ) -> None:
         """Process a WebSocket message."""
         msg_type = msg.get("type", "")
+        if msg_type not in ("orderbook_snapshot", "orderbook_delta"):
+            return
 
-        if msg_type == "orderbook_snapshot" or msg_type == "orderbook_delta":
-            ticker = msg.get("msg", {}).get("market_ticker", "")
-            if ticker not in self._watched_tickers:
-                return
+        body = msg.get("msg") or {}
+        ticker = body.get("market_ticker", "")
+        if not ticker or ticker not in self._watched_tickers:
+            return
 
-            # Extract best yes_ask from orderbook
-            orderbook = msg.get("msg", {})
-            yes_asks = orderbook.get("yes", [])
-            if yes_asks and isinstance(yes_asks, list):
-                # Kalshi orderbook: list of [price_cents, quantity]
-                # Best ask = lowest price
-                try:
-                    best_ask_cents = min(
-                        entry[0] for entry in yes_asks
-                        if isinstance(entry, list) and len(entry) >= 2 and entry[1] > 0
-                    )
-                    price = best_ask_cents / 100.0
-                except (ValueError, TypeError, IndexError):
-                    return
+        if msg_type == "orderbook_snapshot":
+            self._apply_snapshot(ticker, body)
+        else:
+            self._apply_delta(ticker, body)
 
-                prev = self._last_prices.get(ticker)
-                if prev is None or abs(price - prev) >= self._min_change:
-                    self._last_prices[ticker] = price
-                    await on_price_change(ticker, price)
+        best_ask_cents = self._best_yes_ask(ticker)
+        if best_ask_cents is None:
+            return
+        price = best_ask_cents / 100.0
+
+        prev = self._last_prices.get(ticker)
+        if prev is None or abs(price - prev) >= self._min_change:
+            self._last_prices[ticker] = price
+            await on_price_change(ticker, price)
+
+    def _apply_snapshot(self, ticker: str, body: dict) -> None:
+        """Replace the ticker's book with the snapshot contents."""
+        self._books[ticker] = {
+            "yes": _levels_from_array(body.get("yes")),
+            "no": _levels_from_array(body.get("no")),
+        }
+
+    def _apply_delta(self, ticker: str, body: dict) -> None:
+        """Apply an incremental update to one side/price level."""
+        side = body.get("side")
+        if side not in ("yes", "no"):
+            return
+        try:
+            price = int(body.get("price"))
+            delta = int(body.get("delta"))
+        except (TypeError, ValueError):
+            return
+        book = self._books.setdefault(ticker, {"yes": {}, "no": {}})
+        levels = book.setdefault(side, {})
+        new_qty = levels.get(price, 0) + delta
+        if new_qty <= 0:
+            levels.pop(price, None)
+        else:
+            levels[price] = new_qty
+
+    def _best_yes_bid(self, ticker: str) -> int | None:
+        """Highest YES bid in cents, or None if no resting YES bids."""
+        yes_levels = self._books.get(ticker, {}).get("yes") or {}
+        return max(yes_levels) if yes_levels else None
+
+    def _best_yes_ask(self, ticker: str) -> int | None:
+        """
+        Synthesized best YES ask in cents.
+
+        Kalshi publishes resting bids per side, not asks.  The best
+        YES ask is the complement of the highest NO bid:
+            ask_cents = 100 - max(no_bid_cents)
+        Filling a NO bid at 43¢ is economically equivalent to selling
+        YES at 57¢, so the cheapest YES purchase mirrors the most
+        aggressive NO bid.
+        """
+        no_levels = self._books.get(ticker, {}).get("no") or {}
+        if not no_levels:
+            return None
+        return 100 - max(no_levels)
 
     def stop(self) -> None:
         self._running = False
@@ -179,3 +241,25 @@ class KalshiWsConsumer:
             "reconnect_count": self._reconnect_count,
             "has_api_key": bool(self._api_key),
         }
+
+
+def _levels_from_array(arr: object) -> dict[int, int]:
+    """
+    Convert a Kalshi orderbook snapshot array `[[price_cents, qty], ...]`
+    into a `{price: qty}` map, dropping zero/negative qty entries and
+    invalid shapes.
+    """
+    out: dict[int, int] = {}
+    if not isinstance(arr, list):
+        return out
+    for entry in arr:
+        if not isinstance(entry, list) or len(entry) < 2:
+            continue
+        try:
+            price = int(entry[0])
+            qty = int(entry[1])
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            out[price] = qty
+    return out
