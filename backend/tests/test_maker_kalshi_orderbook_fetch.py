@@ -210,3 +210,46 @@ class TestClientLifecycle:
         asyncio.run(fetch_kalshi_orderbook("KX-TEST", api_key="k", client=client))
         # Caller owns the client; fetcher must not close it.
         client.aclose.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# REST decimal-string end-to-end — exercises the real Kalshi `/orderbook`
+# response shape from production.  Ensures the fetcher → parser path
+# returns a populated book, not an empty one.
+# ---------------------------------------------------------------------------
+
+class TestRestDecimalStringEndToEnd:
+    def test_real_decimal_string_payload(self):
+        """Mock a response in the exact shape the live Kalshi REST endpoint
+        emits.  Before the parser fix this returned an empty book; after,
+        it must surface the actual best bid / synthesized best ask."""
+        payload = {
+            "orderbook": {
+                "yes": [
+                    ["0.0500", "300935.00"],
+                    ["0.0600", "12.00"],
+                    ["0.0700", "189083.00"],
+                ],
+                "no": [
+                    ["0.4300", "8.00"],
+                    ["0.4100", "10.00"],
+                ],
+            }
+        }
+        client = _mock_client(_ok_response(payload))
+        book = asyncio.run(
+            fetch_kalshi_orderbook("KX-DECIMAL", api_key="test", client=client)
+        )
+        assert book is not None
+        assert book.market_id == "KX-DECIMAL"
+        # Prices recovered from decimal strings, on tick.
+        assert book.best_yes_bid() == pytest.approx(0.07)
+        assert book.best_yes_ask() == pytest.approx(0.57)
+        # Quantities parsed from "300935.00" form.
+        assert book.queue_qty_at("yes_bid", 0.05) == 300935
+        assert book.queue_qty_at("no_bid", 0.43) == 8
+        # Synthesized YES asks ascending.
+        assert [lv.price for lv in book.yes_asks] == [
+            pytest.approx(0.57),
+            pytest.approx(0.59),
+        ]

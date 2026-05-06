@@ -130,14 +130,126 @@ class OrderBook:
 # Parser
 # ---------------------------------------------------------------------------
 
+_TICK_TOLERANCE = 1e-6
+
+
+def _parse_price_to_cents(raw: object) -> int | None:
+    """
+    Parse a price from a Kalshi orderbook level into integer cents (1–99).
+
+    Kalshi exposes two equivalent shapes for the same on-tick price:
+
+      * WebSocket / older REST: integer cents
+            5  → 5 cents (0.05)
+            "5"  → 5 cents (0.05)
+
+      * REST `/markets/{ticker}/orderbook`: decimal-dollar strings
+            "0.0500" → 5 cents (0.05)
+            "0.4300" → 43 cents (0.43)
+
+    Floats are also accepted (some serializers emit 0.05 instead of "0.0500").
+
+    Returns the canonical integer cents in [1, 99] for valid on-tick prices,
+    or `None` for any malformed, off-tick, or out-of-range input.  `bool`
+    is explicitly rejected because it is an `int` subclass (`True == 1`).
+    """
+    if isinstance(raw, bool):
+        return None
+
+    if isinstance(raw, int):
+        # Pure int → always integer cents.
+        cents = raw
+
+    elif isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        if "." in s:
+            # Decimal-dollar string ("0.0500"): convert to cents and require
+            # the result to be on a 1¢ tick.
+            try:
+                dollars = float(s)
+            except ValueError:
+                return None
+            cents_f = dollars * 100
+            cents = round(cents_f)
+            if abs(cents_f - cents) > _TICK_TOLERANCE:
+                return None
+        else:
+            # Integer-cents string ("5"): direct int parse.
+            try:
+                cents = int(s)
+            except ValueError:
+                return None
+
+    elif isinstance(raw, float):
+        # Heuristic: floats in (0, 1) are decimal dollars; everything else
+        # is treated as a whole-number cent value (and must round cleanly).
+        if 0.0 < raw < 1.0:
+            cents_f = raw * 100
+            cents = round(cents_f)
+            if abs(cents_f - cents) > _TICK_TOLERANCE:
+                return None
+        else:
+            cents = round(raw)
+            if abs(raw - cents) > _TICK_TOLERANCE:
+                return None
+
+    else:
+        return None
+
+    if not (1 <= cents <= 99):
+        return None
+    return cents
+
+
+def _parse_quantity(raw: object) -> int | None:
+    """
+    Parse a contract quantity from a Kalshi orderbook level.
+
+    Accepts integers, integer strings (`"10"`), whole-number decimal
+    strings (`"300935.00"`) — Kalshi REST emits this form — and
+    whole-number floats.  Rejects zero, negatives, non-whole-numbers, and
+    non-numeric input.  `bool` is explicitly rejected.
+    """
+    if isinstance(raw, bool):
+        return None
+
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        try:
+            f = float(s)
+        except ValueError:
+            return None
+        n = round(f)
+        if abs(f - n) > _TICK_TOLERANCE:
+            return None
+        return n if n > 0 else None
+
+    if isinstance(raw, float):
+        n = round(raw)
+        if abs(raw - n) > _TICK_TOLERANCE:
+            return None
+        return n if n > 0 else None
+
+    return None
+
+
 def _parse_levels_from_array(
     arr: object,
     descending: bool,
 ) -> tuple[BookLevel, ...]:
     """
-    Convert Kalshi's `[[price_cents, qty], ...]` shape to a sorted tuple of
-    `BookLevel`.  Drops zero/negative qty, prices outside (1, 99), and
-    malformed entries.  Same-price duplicates are summed.
+    Convert Kalshi's `[[price, qty], ...]` shape to a sorted tuple of
+    `BookLevel`.  Both integer-cents and decimal-dollar shapes are
+    accepted (see `_parse_price_to_cents`).  Drops zero/negative qty,
+    off-tick prices, prices outside (1, 99) cents, and malformed entries.
+    Same-price duplicates are summed.
     """
     if not isinstance(arr, list):
         return ()
@@ -145,16 +257,13 @@ def _parse_levels_from_array(
     for entry in arr:
         if not isinstance(entry, list) or len(entry) < 2:
             continue
-        try:
-            price_cents = int(entry[0])
-            qty = int(entry[1])
-        except (TypeError, ValueError):
+        cents = _parse_price_to_cents(entry[0])
+        if cents is None:
             continue
-        if qty <= 0:
+        qty = _parse_quantity(entry[1])
+        if qty is None:
             continue
-        if not (1 <= price_cents <= 99):
-            continue
-        by_price[price_cents] = by_price.get(price_cents, 0) + qty
+        by_price[cents] = by_price.get(cents, 0) + qty
     out = [BookLevel(price=p / 100.0, quantity=q) for p, q in by_price.items()]
     out.sort(key=lambda lv: lv.price, reverse=descending)
     return tuple(out)
