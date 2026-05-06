@@ -38,3 +38,16 @@ class MakerConfig:
     # --- Lifecycle (config-only in v1) ---
     default_ttl_seconds: int = 1800
     cancel_before_event_offset_s: int = 600
+
+
+# Default singleton for callers that don't construct their own config.
+# Disabled by default — production scans pass through this and run no maker
+# planning unless a caller explicitly opts in.
+DEFAULT_MAKER_CONFIG = MakerConfig()
+
+
+def get_maker_config() -> MakerConfig:
+    """Return the default disabled MakerConfig.  Tests / future runtime
+    config may inject their own via dependency injection (parameter on
+    fetch_opportunities)."""
+    return DEFAULT_MAKER_CONFIG

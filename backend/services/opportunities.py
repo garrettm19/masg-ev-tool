@@ -28,6 +28,7 @@ from dataclasses import dataclass, asdict
 from services.adapters import MarketAdapter, NormalizedMarket, PolymarketAdapter, KalshiAdapter
 from services.engine_config import EngineConfig
 from services.feature_extractor import extract_features
+from services.maker.config import DEFAULT_MAKER_CONFIG, MakerConfig
 from services.matcher import SUPPORTED_SPORTSBOOK_MARKET_TYPES
 from services.normalizer import last_name
 from services.odds_provider import fetch_odds, fetch_props
@@ -315,12 +316,112 @@ def _deduplicate(opps: list[EvaluatedOpportunity]) -> list[EvaluatedOpportunity]
 
 
 # ---------------------------------------------------------------------------
+# Maker pass (paper-only, gated by MakerConfig.enabled)
+# ---------------------------------------------------------------------------
+
+async def _run_maker_pass(
+    features: list[MarketFeatures],
+    engine_cfg: EngineConfig,
+    maker_cfg: MakerConfig,
+    *,
+    store=None,
+    fetch_book=None,
+) -> dict:
+    """
+    Generate paper maker proposals from Pass A features.
+
+    Architectural invariant: this consumes ``MarketFeatures`` directly, NOT
+    ``EvaluatedOpportunity``.  It runs after Pass B (so taker status/reasons
+    are populated for audit) but BEFORE the active SKIP filter (so taker
+    SKIPs for ``NO_EDGE`` — exactly the candidates maker is designed to
+    rescue — remain visible).
+
+    Disabled-path fast-exit: when ``maker_cfg.enabled`` is False this is
+    a constant-time no-op returning a small meta dict.  No maker imports,
+    no orderbook fetches, no JSONL writes.  Production behavior is
+    unchanged unless an opt-in caller passes an enabled config.
+
+    The ``store`` and ``fetch_book`` kwargs exist for test injection only;
+    production calls pass nothing and the defaults take effect.
+    """
+    if not maker_cfg.enabled:
+        return {
+            "maker_enabled": False,
+            "maker_proposals_total": 0,
+            "maker_proposals_eligible": 0,
+            "maker_proposals_rejected": 0,
+        }
+
+    # Lazy imports — keep maker out of the import path when disabled.
+    from services.maker.orderbook import fetch_kalshi_orderbook
+    from services.maker.planner import MakerBookInput
+    from services.maker.policy import inherited_taker_rules
+    from services.maker.service import MakerService
+    from services.maker.state import STATUS_PAPER_ACTIVE
+
+    if fetch_book is None:
+        fetch_book = fetch_kalshi_orderbook
+
+    service = MakerService(engine_cfg=engine_cfg, maker_cfg=maker_cfg, store=store)
+    inherited_rules = inherited_taker_rules()
+    eligible_count = 0
+    rejected_count = 0
+    empty_book = MakerBookInput(best_bid=None, best_ask=None, fetched_at=0.0)
+
+    for f in features:
+        # Scope filter — out-of-scope features are silently ignored (no record,
+        # no I/O).  Polymarket and non-H2H fall here.
+        if f.platform not in maker_cfg.platforms:
+            continue
+        if f.market_type not in maker_cfg.market_types:
+            continue
+
+        # Safety pre-filter — avoid an HTTP fetch for features that any
+        # inherited taker safety rule already rejects.  The two excluded
+        # rules (positive_edge, edge_threshold) are NOT in this list, so a
+        # taker SKIP for NO_EDGE still passes here and proceeds to fetch.
+        safety_ok = all(rule.condition_fn(f, engine_cfg) for rule in inherited_rules)
+        if not safety_ok:
+            service.propose(features=f, book=empty_book)
+            rejected_count += 1
+            continue
+
+        # Safety passes — fetch the real Kalshi orderbook.  Defensive:
+        # fetcher returns None on errors but a wrapper try/except guards
+        # against unexpected exceptions so the scan never crashes.
+        try:
+            book = await fetch_book(f.market_id)
+        except Exception as exc:  # noqa: BLE001  — defensive boundary
+            logger.warning("maker: orderbook fetch raised for %s: %s", f.market_id, exc)
+            book = None
+
+        if book is None:
+            service.propose(features=f, book=empty_book)
+            rejected_count += 1
+            continue
+
+        outcome = service.propose(features=f, book=book)
+        if outcome.status == STATUS_PAPER_ACTIVE:
+            eligible_count += 1
+        else:
+            rejected_count += 1
+
+    return {
+        "maker_enabled": True,
+        "maker_proposals_total": eligible_count + rejected_count,
+        "maker_proposals_eligible": eligible_count,
+        "maker_proposals_rejected": rejected_count,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
 async def fetch_opportunities(
     cfg: EngineConfig = DEFAULT_CONFIG,
     adapters: list[MarketAdapter] | None = None,
+    maker_cfg: MakerConfig = DEFAULT_MAKER_CONFIG,
 ) -> tuple[list[EvaluatedOpportunity], dict]:
     """
     Full two-pass pipeline:
@@ -427,6 +528,13 @@ async def fetch_opportunities(
         all_evaluated.append(opp)
         status_counts[status] = status_counts.get(status, 0) + 1
 
+    # --- Maker pass (paper-only, disabled by default) ---
+    # Runs AFTER Pass B (so taker status/reasons are populated for audit) but
+    # BEFORE the active SKIP filter (so taker SKIPs for NO_EDGE — the candidates
+    # maker is designed to rescue — remain visible).  When maker_cfg.enabled
+    # is False this is a constant-time no-op.
+    maker_meta = await _run_maker_pass(all_features, cfg, maker_cfg)
+
     # --- Deduplicate and sort ---
     # Only deduplicate non-SKIP opportunities (SKIP are kept in full log but not returned)
     active = [o for o in all_evaluated if o.status != "SKIP"]
@@ -461,6 +569,7 @@ async def fetch_opportunities(
     meta["kalshi_series_counts"] = kalshi_series_counts
     if cfg.enable_props:
         meta["prop_features"] = prop_feature_count
+    meta.update(maker_meta)
 
     return active, meta
 
