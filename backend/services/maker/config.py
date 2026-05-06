@@ -42,12 +42,39 @@ class MakerConfig:
 
 # Default singleton for callers that don't construct their own config.
 # Disabled by default — production scans pass through this and run no maker
-# planning unless a caller explicitly opts in.
+# planning unless a caller explicitly opts in via the runtime config.
 DEFAULT_MAKER_CONFIG = MakerConfig()
 
 
+# Runtime-mutable config replacing the static default for the normal
+# refresh path.  When unset, callers see DEFAULT_MAKER_CONFIG (disabled).
+# Mutated only via set_maker_config (called by the maker config endpoint).
+_runtime_maker_config: MakerConfig | None = None
+
+
 def get_maker_config() -> MakerConfig:
-    """Return the default disabled MakerConfig.  Tests / future runtime
-    config may inject their own via dependency injection (parameter on
-    fetch_opportunities)."""
-    return DEFAULT_MAKER_CONFIG
+    """Return the active maker config — runtime override if set, else the
+    disabled default.  Resolved at call time so the value reflects the most
+    recent ``set_maker_config`` call."""
+    return _runtime_maker_config if _runtime_maker_config is not None else DEFAULT_MAKER_CONFIG
+
+
+def set_maker_config(config: MakerConfig) -> MakerConfig:
+    """Replace the runtime maker config.  Returns the new active config.
+
+    Callers (typically the ``POST /api/maker/config`` endpoint) are expected
+    to enforce the paper-mode safety invariants — ``paper_only=True``,
+    ``platforms=("kalshi",)``, ``market_types=("h2h",)`` — before calling
+    this; the function itself does no validation.
+    """
+    global _runtime_maker_config
+    _runtime_maker_config = config
+    return _runtime_maker_config
+
+
+def reset_maker_config() -> None:
+    """Reset the runtime override to ``None`` so ``get_maker_config`` falls
+    back to ``DEFAULT_MAKER_CONFIG``.  Used by tests and by any future admin
+    "stop maker" path."""
+    global _runtime_maker_config
+    _runtime_maker_config = None

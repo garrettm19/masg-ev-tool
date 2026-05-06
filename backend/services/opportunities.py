@@ -28,7 +28,7 @@ from dataclasses import dataclass, asdict
 from services.adapters import MarketAdapter, NormalizedMarket, PolymarketAdapter, KalshiAdapter
 from services.engine_config import EngineConfig
 from services.feature_extractor import extract_features
-from services.maker.config import DEFAULT_MAKER_CONFIG, MakerConfig
+from services.maker.config import MakerConfig, get_maker_config
 from services.matcher import SUPPORTED_SPORTSBOOK_MARKET_TYPES
 from services.normalizer import last_name
 from services.odds_provider import fetch_odds, fetch_props
@@ -421,7 +421,7 @@ async def _run_maker_pass(
 async def fetch_opportunities(
     cfg: EngineConfig = DEFAULT_CONFIG,
     adapters: list[MarketAdapter] | None = None,
-    maker_cfg: MakerConfig = DEFAULT_MAKER_CONFIG,
+    maker_cfg: MakerConfig | None = None,
 ) -> tuple[list[EvaluatedOpportunity], dict]:
     """
     Full two-pass pipeline:
@@ -533,6 +533,13 @@ async def fetch_opportunities(
     # BEFORE the active SKIP filter (so taker SKIPs for NO_EDGE — the candidates
     # maker is designed to rescue — remain visible).  When maker_cfg.enabled
     # is False this is a constant-time no-op.
+    #
+    # When the caller passes ``maker_cfg=None`` (the default for the normal
+    # refresh path), the runtime config is consulted at call time.  Tests
+    # and the controlled in-process test pass typically pass an explicit
+    # config to bypass the runtime singleton.
+    if maker_cfg is None:
+        maker_cfg = get_maker_config()
     maker_meta = await _run_maker_pass(all_features, cfg, maker_cfg)
 
     # --- Deduplicate and sort ---

@@ -380,3 +380,219 @@ class TestRouterMounted:
     def test_unknown_maker_route_404(self, client_with_store):
         client, _, _ = client_with_store
         assert client.get("/api/maker/no-such-route").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /api/maker/config — runtime config GET/POST
+#
+# Safety invariants:
+#   paper_only           must always remain True
+#   platforms            must always remain ("kalshi",)
+#   market_types         must always remain ("h2h",)
+# These are not in MakerConfigUpdateRequest and are clamped by _enforce_safety
+# regardless of input.  Tests below confirm both layers of defense.
+# ---------------------------------------------------------------------------
+
+class TestMakerConfigGet:
+    def test_get_returns_disabled_paper_only_defaults(self, client_with_store):
+        client, _, _ = client_with_store
+        resp = client.get("/api/maker/config")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["enabled"] is False
+        assert body["paper_only"] is True
+        assert body["platforms"] == ["kalshi"]
+        assert body["market_types"] == ["h2h"]
+        # Sanity: the documented default thresholds are surfaced
+        assert body["min_estimated_maker_edge"] == pytest.approx(0.05)
+        assert body["require_min_spread"] == pytest.approx(0.02)
+        assert body["max_book_age_seconds"] == pytest.approx(30.0)
+        assert body["max_fd_age_seconds"] == pytest.approx(600.0)
+
+
+class TestMakerConfigPostEnableAndDisable:
+    def test_post_can_enable(self, client_with_store):
+        client, _, _ = client_with_store
+        resp = client.post("/api/maker/config", json={"enabled": True})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["enabled"] is True
+        # Safety invariants still hold
+        assert body["paper_only"] is True
+        assert body["platforms"] == ["kalshi"]
+        assert body["market_types"] == ["h2h"]
+
+    def test_post_persists_across_get(self, client_with_store):
+        client, _, _ = client_with_store
+        client.post("/api/maker/config", json={"enabled": True, "min_estimated_maker_edge": 0.07})
+        body = client.get("/api/maker/config").json()
+        assert body["enabled"] is True
+        assert body["min_estimated_maker_edge"] == pytest.approx(0.07)
+
+    def test_post_can_disable_again(self, client_with_store):
+        client, _, _ = client_with_store
+        client.post("/api/maker/config", json={"enabled": True})
+        resp = client.post("/api/maker/config", json={"enabled": False})
+        assert resp.json()["enabled"] is False
+
+    def test_post_partial_update_preserves_other_fields(self, client_with_store):
+        client, _, _ = client_with_store
+        client.post("/api/maker/config", json={
+            "enabled": True,
+            "min_estimated_maker_edge": 0.08,
+            "max_book_age_seconds": 45.0,
+        })
+        # Only update enabled; min_edge and max_book_age must remain
+        client.post("/api/maker/config", json={"enabled": False})
+        body = client.get("/api/maker/config").json()
+        assert body["enabled"] is False
+        assert body["min_estimated_maker_edge"] == pytest.approx(0.08)
+        assert body["max_book_age_seconds"] == pytest.approx(45.0)
+
+
+class TestMakerConfigPostSafety:
+    """Even if a hostile client tries to send unsafe fields, the endpoint
+    must NOT change paper_only / platforms / market_types away from safe."""
+
+    def test_post_paper_only_false_ignored(self, client_with_store):
+        client, _, _ = client_with_store
+        resp = client.post("/api/maker/config", json={"enabled": True, "paper_only": False})
+        assert resp.status_code == 200
+        # paper_only stays True regardless
+        assert resp.json()["paper_only"] is True
+        # And the runtime singleton agrees
+        assert client.get("/api/maker/config").json()["paper_only"] is True
+
+    def test_post_platforms_polymarket_ignored(self, client_with_store):
+        client, _, _ = client_with_store
+        resp = client.post("/api/maker/config", json={
+            "enabled": True,
+            "platforms": ["polymarket", "kalshi"],
+        })
+        assert resp.status_code == 200
+        # platforms stays locked to ("kalshi",)
+        assert resp.json()["platforms"] == ["kalshi"]
+
+    def test_post_market_types_totals_ignored(self, client_with_store):
+        client, _, _ = client_with_store
+        resp = client.post("/api/maker/config", json={
+            "enabled": True,
+            "market_types": ["totals", "handicap"],
+        })
+        assert resp.status_code == 200
+        assert resp.json()["market_types"] == ["h2h"]
+
+    def test_post_unknown_live_trading_flag_ignored(self, client_with_store):
+        """A made-up "live_trading=true" key must be silently ignored by Pydantic
+        and produce no behavior change."""
+        client, _, _ = client_with_store
+        resp = client.post("/api/maker/config", json={
+            "enabled": True,
+            "live_trading": True,
+            "place_real_orders": True,
+        })
+        assert resp.status_code == 200
+        # Safety invariants still hold; no unknown field is reflected
+        body = resp.json()
+        assert body["paper_only"] is True
+        assert "live_trading" not in body
+        assert "place_real_orders" not in body
+
+    def test_post_combined_unsafe_payload_clamped(self, client_with_store):
+        """Combined attempt: enable + disable paper_only + add polymarket +
+        switch to totals.  Only the 'enabled' field should win; everything
+        else stays at the safe defaults."""
+        client, _, _ = client_with_store
+        resp = client.post("/api/maker/config", json={
+            "enabled": True,
+            "paper_only": False,
+            "platforms": ["polymarket"],
+            "market_types": ["totals"],
+            "live_trading": True,
+        })
+        body = resp.json()
+        assert body["enabled"] is True
+        assert body["paper_only"] is True
+        assert body["platforms"] == ["kalshi"]
+        assert body["market_types"] == ["h2h"]
+
+
+class TestMakerConfigRefreshIntegration:
+    """The runtime config drives the normal refresh path: when enabled via
+    POST, ``fetch_opportunities`` (called by snapshot.refresh_snapshot)
+    runs the maker pass; when disabled, no records are written."""
+
+    def test_refresh_disabled_writes_no_records(self, client_with_store):
+        import asyncio
+        from unittest.mock import patch
+        from services.opportunities import fetch_opportunities
+        from services.engine_config import EngineConfig
+
+        # Stub the upstream odds fetch to avoid network
+        async def _no_odds(*args, **kwargs):
+            return [], {}
+
+        client, store, _ = client_with_store
+
+        # Maker disabled (default)
+        with patch("services.opportunities.fetch_odds", side_effect=_no_odds):
+            opps, meta = asyncio.run(fetch_opportunities(
+                cfg=EngineConfig(),
+                adapters=[],
+            ))
+
+        assert meta["maker_enabled"] is False
+        assert meta["maker_proposals_total"] == 0
+        # No JSONL file written
+        assert store.read_recent(days=2) == []
+
+    def test_refresh_enabled_via_runtime_meta_reflects(self, client_with_store):
+        import asyncio
+        from unittest.mock import patch
+        from services.opportunities import fetch_opportunities
+        from services.engine_config import EngineConfig
+
+        async def _no_odds(*args, **kwargs):
+            return [], {}
+
+        client, store, _ = client_with_store
+        # Enable via the API endpoint — the same path a frontend would use.
+        client.post("/api/maker/config", json={"enabled": True})
+
+        with patch("services.opportunities.fetch_odds", side_effect=_no_odds):
+            opps, meta = asyncio.run(fetch_opportunities(
+                cfg=EngineConfig(),
+                adapters=[],
+            ))
+
+        # No features → 0 proposals, but maker_enabled=True flows through.
+        assert meta["maker_enabled"] is True
+        assert meta["maker_proposals_total"] == 0
+        # Sanity: subsequent GET shows the runtime is still enabled
+        assert client.get("/api/maker/config").json()["enabled"] is True
+
+
+class TestMakerConfigNoOrderPlacementCode:
+    """Static guard: no order-placement keywords appear in the maker
+    runtime path (config + service + planner + state).  If a future commit
+    introduces live trading, it must be deliberate enough to also touch
+    this list — and a code review will catch it."""
+
+    def test_no_order_placement_strings_in_maker_modules(self):
+        from pathlib import Path
+        backend_root = Path(__file__).resolve().parent.parent
+        forbidden = ("portfolio/orders", "place_order", "create_order")
+        offenders = []
+        for module in (
+            backend_root / "services" / "maker" / "config.py",
+            backend_root / "services" / "maker" / "service.py",
+            backend_root / "services" / "maker" / "planner.py",
+            backend_root / "services" / "maker" / "state.py",
+            backend_root / "services" / "maker" / "policy.py",
+            backend_root / "routers" / "maker.py",
+        ):
+            text = module.read_text(encoding="utf-8")
+            for needle in forbidden:
+                if needle in text:
+                    offenders.append(f"{module.name}: {needle}")
+        assert offenders == [], f"Order-placement strings found: {offenders}"
