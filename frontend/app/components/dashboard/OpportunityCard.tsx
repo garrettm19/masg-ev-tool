@@ -133,9 +133,12 @@ export function OpportunityCard({
       }
       style={{
         background: bg,
-        borderColor,
+        borderTopColor: borderColor,
+        borderRightColor: borderColor,
+        borderBottomColor: borderColor,
+        borderLeftColor: isTaken ? "var(--warn)" : borderColor,
+        borderLeftWidth: isTaken ? "2px" : undefined,
         borderRadius: "var(--radius-lg)",
-        borderLeft: isTaken ? "2px solid var(--warn)" : undefined,
         padding: "12px",
       }}
     >
