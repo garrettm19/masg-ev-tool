@@ -477,6 +477,58 @@ class TestTickRoundingConservative:
 # Notes / observability
 # ---------------------------------------------------------------------------
 
+class TestNoMidpointPricing:
+    """Regression guard: ``proposed_price`` is one tick above ``best_bid``
+    (capped by ``maker_max_bid``) — never the midpoint of (best_bid, best_ask).
+
+    The maker policy already enforces ``best_bid < proposed_price < best_ask``
+    via ``suggested_bid_inside_spread``, but this test pins the explicit
+    "no midpoint" property directly on the produced proposal across a
+    matrix of TOB cases.
+    """
+
+    @pytest.mark.parametrize("best_bid,best_ask,p_true", [
+        (0.10, 0.90, 0.50),
+        (0.40, 0.50, 0.55),
+        (0.05, 0.95, 0.60),
+        (0.30, 0.80, 0.65),
+        (0.20, 0.70, 0.55),
+    ])
+    def test_proposed_price_is_one_tick_above_bid_not_midpoint(
+        self, best_bid, best_ask, p_true,
+    ):
+        f = _features(p_true=p_true)
+        b = _book(best_bid=best_bid, best_ask=best_ask)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+
+        midpoint = (best_bid + best_ask) / 2.0
+        # Midpoint should NOT be where the planner lands (spreads here are > 2 ticks).
+        assert prop.proposed_price != pytest.approx(midpoint, abs=1e-9)
+        # And the price must be strictly inside the spread.
+        assert best_bid < prop.proposed_price < best_ask
+        # And never above maker_max_bid.
+        assert prop.proposed_price <= prop.maker_max_bid + 1e-9
+        # The math formula: proposed_price == min(best_bid + tick, maker_max_bid).
+        candidate = best_bid + TICK_DOLLARS
+        expected = min(candidate, prop.maker_max_bid)
+        assert prop.proposed_price == pytest.approx(expected, abs=1e-9)
+
+    def test_proposed_price_does_not_use_average_spread(self):
+        """A proposal must not collapse to ``best_bid + spread/2`` either —
+        that's just the midpoint by another name."""
+        f = _features()
+        b = _book(best_bid=0.40, best_ask=0.90)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+
+        spread = 0.90 - 0.40
+        average_via_spread = 0.40 + spread / 2.0
+        assert prop.proposed_price != pytest.approx(average_via_spread, abs=1e-9)
+        # Sanity: planner stays one tick above bid.
+        assert prop.proposed_price == pytest.approx(0.41)
+
+
 class TestNotes:
     def test_paper_only_note_always_present(self):
         f = _features()

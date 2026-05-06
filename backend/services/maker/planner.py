@@ -38,14 +38,18 @@ class MakerBookInput:
     ``fetched_at`` is unix seconds; 0.0 means uninitialized and will fail the
     book-fresh maker rule.
 
-    No network fetch in this commit — supplied by tests or by a future
-    integration layer.
+    ``source`` is informational provenance — "market_list_top_of_book"
+    when the values come from the Kalshi market-list adapter (the v1
+    production path), "rest_orderbook" when they come from a depth fetch
+    via ``services.maker.orderbook.fetch_kalshi_orderbook``, "ws" for the
+    streaming book.  Defaults to "unknown" for legacy callers.
     """
     best_bid: float | None
     best_ask: float | None
     fetched_at: float
     best_bid_qty: int = 0
     best_ask_qty: int = 0
+    source: str = "unknown"
 
 
 @dataclass(frozen=True)

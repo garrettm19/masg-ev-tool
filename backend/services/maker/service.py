@@ -43,7 +43,13 @@ class ProposalOutcome:
 
 
 def _book_to_input(book: OrderBook) -> MakerBookInput:
-    """Convert a parsed ``OrderBook`` into the planner's minimal book input."""
+    """Convert a parsed ``OrderBook`` into the planner's minimal book input.
+
+    Source is read from the OrderBook (typically "rest" when produced by
+    ``fetch_kalshi_orderbook``).  This is preserved on the resulting
+    ``MakerBookInput`` so the audit trail can distinguish a depth-fetched
+    book from a market-list top-of-book input.
+    """
     best_bid = book.best_yes_bid()
     best_ask = book.best_yes_ask()
     return MakerBookInput(
@@ -52,6 +58,7 @@ def _book_to_input(book: OrderBook) -> MakerBookInput:
         fetched_at=book.fetched_at,
         best_bid_qty=book.queue_qty_at("yes_bid", best_bid) if best_bid is not None else 0,
         best_ask_qty=book.queue_qty_at("yes_ask", best_ask) if best_ask is not None else 0,
+        source=book.source or "unknown",
     )
 
 
