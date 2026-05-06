@@ -711,3 +711,114 @@ class TestPlatformCostBuffer:
         kalshi_f = next(f for f in kalshi_features if f.pm_price == 0.55)
 
         assert poly_f.edge == pytest.approx(kalshi_f.edge + cfg.cost_buffer, abs=0.0001)
+
+
+# ---------------------------------------------------------------------------
+# Top-of-book pass-through — best_bid / best_ask must flow from
+# NormalizedMarket through `_base_features` to MarketFeatures.  Maker
+# planning will read these fields directly in a follow-up commit.
+# ---------------------------------------------------------------------------
+
+class TestBestBidAskPassThrough:
+    def _market_with_book(
+        self,
+        best_bid: float | None,
+        best_ask: float | None,
+    ) -> NormalizedMarket:
+        return NormalizedMarket(
+            platform="kalshi",
+            market_id="K1",
+            event="Alcaraz vs Sinner",
+            market_type="h2h",
+            side="Carlos Alcaraz",
+            line=None,
+            price=0.60,
+            liquidity=500.0,
+            url="https://kalshi.com/markets/test",
+            timestamp="2026-06-01T18:00:00Z",
+            question="Will Alcaraz beat Sinner?",
+            end_date="2026-06-01T18:00:00Z",
+            outcome_prices=["0.60", "0.40"],
+            event_slug="test",
+            best_bid=best_bid,
+            best_ask=best_ask,
+        )
+
+    def test_best_bid_and_ask_propagated(self):
+        market = self._market_with_book(best_bid=0.40, best_ask=0.60)
+        event = _make_event()
+        cfg = EngineConfig()
+        features = extract_features(market, event, cfg)
+        # h2h produces two MarketFeatures (one per side); both inherit the
+        # same top-of-book values from the source NormalizedMarket.
+        assert len(features) == 2
+        for f in features:
+            assert f.best_bid == pytest.approx(0.40)
+            assert f.best_ask == pytest.approx(0.60)
+
+    def test_defaults_to_none_when_unset(self):
+        """A NormalizedMarket without best_bid/best_ask leaves them None
+        on the produced MarketFeatures (matches the Polymarket adapter today)."""
+        market = NormalizedMarket(
+            platform="polymarket",
+            market_id="PM1",
+            event="Alcaraz vs Sinner",
+            market_type="h2h",
+            side="",
+            line=None,
+            price=0.55,
+            liquidity=1000.0,
+            url=None,
+            timestamp=None,
+            question="Will Alcaraz beat Sinner?",
+            end_date="2026-06-01T18:00:00Z",
+            outcome_prices=["0.55", "0.45"],
+            event_slug="test",
+        )
+        features = extract_features(market, _make_event(), EngineConfig())
+        assert len(features) == 2
+        for f in features:
+            assert f.best_bid is None
+            assert f.best_ask is None
+
+    def test_best_bid_none_with_ask_set(self):
+        """Asymmetric case (kalshi single-fallback with no resting bid):
+        best_ask populated, best_bid None.  Both flow through cleanly."""
+        market = self._market_with_book(best_bid=None, best_ask=0.60)
+        features = extract_features(market, _make_event(), EngineConfig())
+        for f in features:
+            assert f.best_bid is None
+            assert f.best_ask == pytest.approx(0.60)
+
+    def test_passthrough_does_not_alter_existing_pricing_fields(self):
+        """Adding best_bid/best_ask must not perturb pm_price, pm_price_no,
+        pm_price_effective, edge, bid_ask_spread, price_fetched_at."""
+        market = NormalizedMarket(
+            platform="kalshi",
+            market_id="K1",
+            event="Alcaraz vs Sinner",
+            market_type="h2h",
+            side="Carlos Alcaraz",
+            line=None,
+            price=0.60,
+            liquidity=500.0,
+            url=None,
+            timestamp=None,
+            question="Will Alcaraz beat Sinner?",
+            end_date="2026-06-01T18:00:00Z",
+            outcome_prices=["0.60", "0.40"],
+            event_slug="test",
+            bid_ask_spread=0.02,
+            best_bid=0.58,
+            best_ask=0.60,
+            fetched_at=1234567890.0,
+        )
+        features = extract_features(market, _make_event(), EngineConfig())
+        assert len(features) == 2
+        # Sanity: existing fields preserved exactly
+        for f in features:
+            assert f.bid_ask_spread == pytest.approx(0.02)
+            assert f.price_fetched_at == 1234567890.0
+            # and the new fields are also there
+            assert f.best_bid == pytest.approx(0.58)
+            assert f.best_ask == pytest.approx(0.60)

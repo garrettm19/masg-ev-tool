@@ -975,6 +975,198 @@ class TestBidAskSpread:
 
 
 # ---------------------------------------------------------------------------
+# Top-of-book best_bid / best_ask synthesis
+# ---------------------------------------------------------------------------
+
+class TestBestBidAsk:
+    """NormalizedMarket carries best_bid / best_ask for maker planning.
+
+    For 2-way binary Kalshi events, buying NO of M2 is economically identical
+    to buying YES of M1, so the best YES_M1 bid is `max(M1.yes_bid, M2.no_bid)`.
+    For 3-way (soccer), NO_M2 includes draw mass and is NOT a YES_M1 bid;
+    only direct M1.yes_bid is used.
+    """
+
+    def test_2way_best_bid_uses_cross_market_max(self):
+        """M1.yes_bid=0.40, M2.no_bid=0.42 → M1-side best_bid = 0.42."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.60, no_ask=0.42,
+        )
+        ma_dict["yes_bid_dollars"] = "0.40"     # M1.yes_bid
+
+        mb_dict, _, _ = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        mb_dict["no_bid_dollars"] = "0.42"      # M2.no_bid → cross-market YES_M1 bid
+
+        result = _build_one("EVT", [(ma_dict, series, slug), (mb_dict, series, slug)])
+        assert result is not None
+        # M1 = ticker A (sorted).  best_bid = max(0.40, 0.42) = 0.42
+        assert result.best_bid == pytest.approx(0.42)
+
+    def test_2way_best_bid_uses_yes_bid_when_higher(self):
+        """If M1.yes_bid > M2.no_bid, direct YES bid wins."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.60, no_ask=0.42,
+        )
+        ma_dict["yes_bid_dollars"] = "0.45"     # higher than M2.no_bid
+
+        mb_dict, _, _ = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        mb_dict["no_bid_dollars"] = "0.30"
+
+        result = _build_one("EVT", [(ma_dict, series, slug), (mb_dict, series, slug)])
+        assert result is not None
+        assert result.best_bid == pytest.approx(0.45)
+
+    def test_2way_best_ask_matches_existing_price(self):
+        """best_ask must equal `price` for Kalshi 2-way (cross-market min)."""
+        ma = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.62, no_ask=0.40,
+        )
+        mb = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        result = _build_one("EVT", [ma, mb])
+        assert result is not None
+        # M1 = A.  cross-market best_ask = min(A.yes_ask=0.62, B.no_ask=0.60) = 0.60
+        assert result.best_ask == pytest.approx(0.60)
+        assert result.best_ask == pytest.approx(result.price)
+
+    def test_3way_best_bid_direct_only(self):
+        """3-way soccer: M2.no_bid covers (M1 wins ∪ draw) — NOT a YES_M1 bid.
+        best_bid must use direct M1.yes_bid only."""
+        home_dict, series, slug = _make_soccer_entry(
+            "KXEPLGAME-26APR21BRICFC-BRI", "Brighton", 0.35,
+        )
+        away_dict, _, _ = _make_soccer_entry(
+            "KXEPLGAME-26APR21BRICFC-CFC", "Chelsea", 0.38,
+        )
+        draw_dict, _, _ = _make_soccer_entry(
+            "KXEPLGAME-26APR21BRICFC-TIE", "Tie", 0.30,
+        )
+        # Override defaults: home direct YES bid 0.30, away NO bid 0.50
+        home_dict["yes_bid_dollars"] = "0.30"
+        away_dict["no_bid_dollars"] = "0.50"   # MUST NOT leak into Brighton's best_bid
+
+        results = _build_event_markets(
+            "KXEPLGAME-26APR21BRICFC",
+            [(home_dict, series, slug), (away_dict, series, slug), (draw_dict, series, slug)],
+        )
+        bri = next(r for r in results if r.side == "Brighton")
+        # Direct only: 0.30, NOT 0.50 from Chelsea's no_bid
+        assert bri.best_bid == pytest.approx(0.30)
+
+    def test_3way_best_ask_direct_only(self):
+        """3-way: best_ask is the team's own yes_ask, equal to `price`."""
+        home = _make_soccer_entry("KXEPLGAME-26APR21BRICFC-BRI", "Brighton", 0.35)
+        away = _make_soccer_entry("KXEPLGAME-26APR21BRICFC-CFC", "Chelsea", 0.38)
+        draw = _make_soccer_entry("KXEPLGAME-26APR21BRICFC-TIE", "Tie", 0.30)
+        results = _build_event_markets("KXEPLGAME-26APR21BRICFC", [home, away, draw])
+
+        for r in results:
+            assert r.best_ask == pytest.approx(r.price)
+            if r.side == "Brighton":
+                assert r.best_ask == pytest.approx(0.35)
+            elif r.side == "Chelsea":
+                assert r.best_ask == pytest.approx(0.38)
+
+    def test_single_fallback_best_bid_ask_from_direct(self):
+        """Unpaired market path uses direct yes_bid_dollars / yes_ask_dollars."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will Alcaraz win?",
+            yes_ask=0.65, no_ask=0.37,
+        )
+        ma_dict["yes_bid_dollars"] = "0.63"
+        result = _build_one("EVT", [(ma_dict, series, slug)])
+        assert result is not None
+        assert result.best_ask == pytest.approx(0.65)
+        assert result.best_bid == pytest.approx(0.63)
+
+    def test_2way_missing_both_bids_yields_none(self):
+        """If M1.yes_bid AND M2.no_bid are both 0/missing, best_bid is None."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.60, no_ask=0.42,
+        )
+        ma_dict["yes_bid_dollars"] = "0"
+
+        mb_dict, _, _ = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        mb_dict["no_bid_dollars"] = "0"
+
+        result = _build_one("EVT", [(ma_dict, series, slug), (mb_dict, series, slug)])
+        assert result is not None
+        assert result.best_bid is None
+
+    def test_2way_one_side_missing_uses_other(self):
+        """M1.yes_bid=0 but M2.no_bid=0.42 → best_bid=0.42 (not None)."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.60, no_ask=0.42,
+        )
+        ma_dict["yes_bid_dollars"] = "0"
+
+        mb_dict, _, _ = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        mb_dict["no_bid_dollars"] = "0.42"
+
+        result = _build_one("EVT", [(ma_dict, series, slug), (mb_dict, series, slug)])
+        assert result is not None
+        assert result.best_bid == pytest.approx(0.42)
+
+    def test_single_fallback_missing_yes_bid_yields_none(self):
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will Alcaraz win?",
+            yes_ask=0.65, no_ask=0.37,
+        )
+        ma_dict["yes_bid_dollars"] = "0"
+        result = _build_one("EVT", [(ma_dict, series, slug)])
+        assert result is not None
+        assert result.best_bid is None
+        # best_ask still set from direct yes_ask
+        assert result.best_ask == pytest.approx(0.65)
+
+    def test_3way_missing_yes_bid_yields_none(self):
+        home_dict, series, slug = _make_soccer_entry(
+            "KXEPLGAME-26APR21BRICFC-BRI", "Brighton", 0.35,
+        )
+        away = _make_soccer_entry("KXEPLGAME-26APR21BRICFC-CFC", "Chelsea", 0.38)
+        draw = _make_soccer_entry("KXEPLGAME-26APR21BRICFC-TIE", "Tie", 0.30)
+        home_dict["yes_bid_dollars"] = "0"
+        results = _build_event_markets(
+            "KXEPLGAME-26APR21BRICFC",
+            [(home_dict, series, slug), away, draw],
+        )
+        bri = next(r for r in results if r.side == "Brighton")
+        assert bri.best_bid is None
+        assert bri.best_ask == pytest.approx(0.35)
+
+    def test_default_normalizedmarket_best_bid_ask_none(self):
+        """A NormalizedMarket constructed without best_bid/best_ask defaults None.
+        Pins the contract for non-Kalshi adapters (Polymarket today)."""
+        nm = NormalizedMarket(
+            platform="polymarket", market_id="PM1", event="X",
+            market_type="h2h", side="", line=None, price=0.5,
+            liquidity=None, url=None, timestamp=None,
+            question="Q", end_date=None, outcome_prices=None, event_slug=None,
+        )
+        assert nm.best_bid is None
+        assert nm.best_ask is None
+
+
+# ---------------------------------------------------------------------------
 # Per-series fetch counts
 # ---------------------------------------------------------------------------
 

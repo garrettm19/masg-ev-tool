@@ -704,6 +704,9 @@ def _base_features(
         away_last_name_collision=away_coll,
         # Data quality
         bid_ask_spread=market.bid_ask_spread,
+        # Top-of-book — maker-planning inputs; pure pass-through from adapter
+        best_bid=market.best_bid,
+        best_ask=market.best_ask,
         # Staleness tracking
         price_fetched_at=market.fetched_at,
         fd_fetched_at=odds_cache.get_fetched_at(event.sport_key),

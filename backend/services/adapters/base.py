@@ -45,6 +45,15 @@ class NormalizedMarket:
     # Data quality
     bid_ask_spread: float | None = None  # yes_ask - yes_bid; None if unavailable
 
+    # Top-of-book — best YES bid and best YES ask from the market list, in
+    # dollars on tick.  Populated by adapters that have this data; None when
+    # unavailable.  For Kalshi 2-way these are cross-market values
+    # (max for bid, min for ask); for 3-way they are direct from the team's
+    # own market.  These are maker-planning inputs and are independent of
+    # ``price`` (which remains the existing taker-entry value).
+    best_bid: float | None = None
+    best_ask: float | None = None
+
     # Staleness tracking
     fetched_at: float = 0.0     # time.time() when price data was obtained
 

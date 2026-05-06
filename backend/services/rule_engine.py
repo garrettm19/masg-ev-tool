@@ -114,6 +114,11 @@ class MarketFeatures:
     # Data quality
     bid_ask_spread: float | None = None      # yes_ask - yes_bid; None if unavailable
 
+    # Top-of-book — copied from NormalizedMarket.  Maker planning will read
+    # these directly so it doesn't have to fetch /orderbook per feature.
+    best_bid: float | None = None
+    best_ask: float | None = None
+
     # Metadata quality
     has_end_date: bool = False               # market has a resolution date
     has_outcome_prices: bool = False          # market has parseable outcome prices

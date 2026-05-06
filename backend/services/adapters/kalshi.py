@@ -142,6 +142,18 @@ def _safe_float(val: object) -> float:
         return 0.0
 
 
+def _safe_max_positive(*values: float) -> float | None:
+    """Return ``max(...)`` of strictly-positive values, rounded to 4dp.
+
+    Returns None when no input is positive.  Used to synthesize the
+    cross-market best YES bid in 2-way Kalshi events: a NO bid on M2 is
+    economically identical to a YES bid on M1, so the best YES_M1 bid is
+    ``max(M1.yes_bid, M2.no_bid)``.
+    """
+    positives = [v for v in values if v > 0]
+    return round(max(positives), 4) if positives else None
+
+
 def _identify_m1_team(
     m1_ticker: str,
     m1_title: str,
@@ -350,10 +362,18 @@ def _build_event_markets(
         # is invalid because "No Home" includes draw probability.
         best_m1_player = m1["yes_ask"]
         best_m2_player = m2["yes_ask"]
+        # Same constraint applies to bids: M2's NO bid covers (M1 wins ∪ draw)
+        # in 3-way, so it is NOT an equivalent YES_M1 bid.  Direct only.
+        best_m1_bid = round(m1["yes_bid"], 4) if m1["yes_bid"] > 0 else None
+        best_m2_bid = round(m2["yes_bid"], 4) if m2["yes_bid"] > 0 else None
     else:
         # 2-way market: pick cheapest route across the pair
         best_m1_player = min(m1["yes_ask"], m2["no_ask"])
         best_m2_player = min(m2["yes_ask"], m1["no_ask"])
+        # Symmetric for bids: NO bid on M2 ≡ YES bid on M1 in 2-way, so
+        # best YES_M1 bid = max(M1.yes_bid, M2.no_bid).
+        best_m1_bid = _safe_max_positive(m1["yes_bid"], m2["no_bid"])
+        best_m2_bid = _safe_max_positive(m2["yes_bid"], m1["no_bid"])
 
     # Validate prices
     if best_m1_player <= 0.02 or best_m1_player >= 0.98:
@@ -386,7 +406,10 @@ def _build_event_markets(
         # the complement.  This keeps YES + NO = 1.0 for price consistency
         # and gives each team its own accurate Kalshi price for edge calc.
         results: list[NormalizedMarket] = []
-        for team, price in [(m1, best_m1_player), (m2, best_m2_player)]:
+        for team, price, team_bid in [
+            (m1, best_m1_player, best_m1_bid),
+            (m2, best_m2_player, best_m2_bid),
+        ]:
             subject = team["yes_sub_title"] or _identify_m1_team(
                 team["ticker"], team["title"], m2["ticker"] if team is m1 else m1["ticker"],
                 m2["title"] if team is m1 else m1["title"],
@@ -414,6 +437,8 @@ def _build_event_markets(
                 outcome_prices=[str(round(price, 4)), str(complement)],
                 event_slug=event_ticker,
                 bid_ask_spread=spread,
+                best_bid=team_bid,
+                best_ask=round(price, 4),
                 fetched_at=best_fetched,
             ))
         return results
@@ -443,6 +468,8 @@ def _build_event_markets(
         outcome_prices=outcome_prices,
         event_slug=event_ticker,
         bid_ask_spread=m1_spread,
+        best_bid=best_m1_bid,
+        best_ask=round(best_m1_player, 4),
         fetched_at=best_fetched,
     )]
 
@@ -473,6 +500,7 @@ def _single_market_fallback(
 
     yes_bid = _safe_float(m.get("yes_bid_dollars"))
     spread = round(yes_ask - yes_bid, 4) if yes_bid > 0 else None
+    best_bid = round(yes_bid, 4) if yes_bid > 0 else None
 
     return NormalizedMarket(
         platform="kalshi",
@@ -493,5 +521,7 @@ def _single_market_fallback(
         outcome_prices=[str(round(yes_ask, 4)), str(no_price)],
         event_slug=event_ticker,
         bid_ask_spread=spread,
+        best_bid=best_bid,
+        best_ask=round(yes_ask, 4),
         fetched_at=market_fetched_at,
     )
