@@ -146,6 +146,68 @@ export interface ScanConfigResponse {
   props_enabled?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Maker proposals — paper-only audit records exposed via /api/maker/proposals
+// ---------------------------------------------------------------------------
+
+export interface MakerRuleEvaluation {
+  rule_name: string;
+  passed: boolean;
+  severity: string;                  // "CRITICAL" | "DOWNGRADE" | "INFO"
+  reason_code: string;
+  description: string;
+}
+
+export interface MakerProposal {
+  schema_version: number;
+  status: string;                     // "paper_active" | "paper_rejected" | ...
+
+  // Identity
+  proposal_id: string;
+  platform: string;
+  market_id: string;
+  market_type: string;
+  side: string;
+  event_label: string;
+  event_start: string;
+
+  // Snapshot
+  p_true: number;
+  required_edge: number;
+  cost_buffer: number;
+  best_bid: number | null;
+  best_ask: number | null;
+  book_fetched_at: number;
+  fd_fetched_at: number;
+
+  // Math
+  maker_max_bid: number;
+  proposed_price: number;
+  tick_size: number;
+  estimated_maker_edge: number;
+
+  // Eligibility
+  eligible: boolean;
+  rejection_reasons: string[];
+  rule_evaluations: MakerRuleEvaluation[];
+
+  // Provenance — taker classification at planning time (audit only)
+  taker_status_at_planning: string;
+  taker_reject_reasons: string[];
+  taker_downgrade_reasons: string[];
+  taker_edge_at_planning: number;
+
+  // Audit
+  created_at: number;
+  notes: string[];
+}
+
+export interface MakerProposalsResponse {
+  days: number;
+  count: number;
+  proposals: MakerProposal[];
+}
+
 export interface SnapshotStatus {
   has_snapshot: boolean;
   updated_at: number | null;

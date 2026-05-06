@@ -1,4 +1,4 @@
-import { OpportunitiesResponse, ScanConfigResponse, SnapshotStatus, SportDataStatus } from "./types";
+import { MakerProposalsResponse, OpportunitiesResponse, ScanConfigResponse, SnapshotStatus, SportDataStatus } from "./types";
 import type { SportRegistryEntry } from "./sport-labels";
 
 const BACKEND_URL =
@@ -95,6 +95,26 @@ export interface HistoricalOddsSnapshot {
   snapshot_time: string;
   home_implied: number;
   away_implied: number;
+}
+
+// ---------------------------------------------------------------------------
+// Maker proposals — read-only paper audit records.
+// The backend never exposes order placement; these endpoints surface the
+// paper proposals produced by the gated paper-maker pipeline.
+// ---------------------------------------------------------------------------
+
+export async function fetchMakerProposals(params: {
+  days?: number;
+  market_id?: string;
+  eligible?: boolean;
+} = {}): Promise<MakerProposalsResponse> {
+  const url = new URL(`${BACKEND_URL}/api/maker/proposals`);
+  if (params.days != null) url.searchParams.set("days", String(params.days));
+  if (params.market_id != null) url.searchParams.set("market_id", params.market_id);
+  if (params.eligible != null) url.searchParams.set("eligible", String(params.eligible));
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) throw new Error(`Backend error: ${res.status}`);
+  return res.json();
 }
 
 export async function fetchHistoricalOdds(

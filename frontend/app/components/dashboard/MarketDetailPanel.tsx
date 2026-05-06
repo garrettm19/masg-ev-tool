@@ -7,6 +7,7 @@ import { StatusPill, type StatusPillTone, type StatusPillVariant } from "../ui/S
 import { Badge, type BadgeVariant } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
+import { PaperMakerPlan } from "./PaperMakerPlan";
 import type { CSSProperties } from "react";
 
 interface Props {
@@ -470,6 +471,12 @@ export function MarketDetailPanel({
             variant={opp.match_quality === "verified" ? "success" : "warn"}
           />
         </div>
+
+        {/* Paper maker plan — read-only paper proposal for this opportunity.
+            Hidden silently when maker is disabled or no record exists.  The
+            section is intentionally non-actionable: no "Place Order" button
+            ever appears here. */}
+        <PaperMakerPlan marketId={opp.market_id} side={opp.side} />
 
         {/* Rule trace — only renders if any reject/downgrade present */}
         <RuleTraceSection opp={opp} />
