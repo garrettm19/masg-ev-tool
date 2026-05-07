@@ -62,7 +62,16 @@ function fmtPct(value: number, digits = 2): string {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
-function makerEdgeColor(edge: number): string {
+// Null-safe edge formatter for rejected proposals where estimated_maker_edge
+// is None whenever proposed_price is None.  Includes the leading "+" only
+// for real numeric values; missing values render as "—".
+function fmtEdgeSigned(edge: number | null): string {
+  if (edge == null) return "—";
+  return `+${fmtPct(edge)}`;
+}
+
+function makerEdgeColor(edge: number | null): string {
+  if (edge == null) return "var(--edge-mute)";
   if (edge >= 0.10) return "var(--edge-elite)";
   if (edge >= 0.05) return "var(--edge-strong)";
   if (edge >= 0.02) return "var(--edge-soft)";
@@ -165,7 +174,7 @@ function EligibleProposal({ p }: { p: MakerProposal }) {
                 fontVariantNumeric: "tabular-nums",
               }}
             >
-              +{fmtPct(p.estimated_maker_edge)}
+              {fmtEdgeSigned(p.estimated_maker_edge)}
             </p>
           </div>
         </div>
@@ -313,7 +322,7 @@ function RejectedProposal({ p }: { p: MakerProposal }) {
             <Row label="Maker Max Bid" value={fmtCents(p.maker_max_bid)} />
             <Row
               label="Estimated Edge"
-              value={`+${fmtPct(p.estimated_maker_edge)}`}
+              value={fmtEdgeSigned(p.estimated_maker_edge)}
               valueColor="var(--fg-muted)"
             />
           </>

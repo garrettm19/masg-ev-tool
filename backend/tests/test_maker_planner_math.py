@@ -334,6 +334,149 @@ class TestMakerMathEdges:
 
 
 # ---------------------------------------------------------------------------
+# Rejected proposal price sanitization — never persist negative-cents prices
+# ---------------------------------------------------------------------------
+
+class TestRejectedPriceSanitization:
+    """Regression guard for the user-reported bug: a rejected paper maker
+    proposal with low p_true and/or missing book persisted
+    ``proposed_price=-0.01`` (an impossible order price).  The planner now
+    surfaces ``None`` for ``maker_max_bid`` / ``proposed_price`` /
+    ``estimated_maker_edge`` whenever the math cannot produce a realizable
+    bid; eligibility behavior is unchanged."""
+
+    def test_low_p_true_yields_none_max_bid_and_proposed(self):
+        """p_true=0.05, required_edge=0.05, cost_buffer=0.01 →
+        max_bid_raw = -0.01.  None instead of negative cents."""
+        f = _features(p_true=0.05)
+        b = _book(best_bid=0.40, best_ask=0.90)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+
+        assert prop.eligible is False
+        assert prop.maker_max_bid is None
+        assert prop.proposed_price is None
+        assert prop.estimated_maker_edge is None
+
+    def test_low_p_true_and_missing_book_yields_none(self):
+        """The exact user-reported case: TRUE_PROB_TOO_LOW +
+        BOOK_CROSSED_OR_EMPTY, formerly persisted proposed_price=-0.01."""
+        f = _features(p_true=0.05)
+        b = _book(best_bid=None, best_ask=None)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+
+        assert prop.eligible is False
+        assert prop.maker_max_bid is None
+        assert prop.proposed_price is None
+        assert prop.estimated_maker_edge is None
+        # Both reason codes must still be raised for the audit trail
+        assert "TRUE_PROB_TOO_LOW" in prop.rejection_reasons
+        assert "BOOK_CROSSED_OR_EMPTY" in prop.rejection_reasons
+
+    def test_missing_book_normal_p_true_keeps_max_bid_only(self):
+        """When p_true is normal but the book is missing, max_bid is still
+        the math-derived ceiling (positive) — but proposed_price has no
+        valid inside-spread candidate, so it's None along with edge."""
+        f = _features(p_true=0.50)
+        b = _book(best_bid=None, best_ask=None)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+
+        assert prop.eligible is False
+        assert prop.maker_max_bid == pytest.approx(0.44)
+        assert prop.proposed_price is None
+        assert prop.estimated_maker_edge is None
+
+    def test_crossed_book_yields_none_proposed_price(self):
+        f = _features()
+        b = _book(best_bid=0.91, best_ask=0.90)   # crossed
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+
+        assert prop.eligible is False
+        assert prop.proposed_price is None
+        assert prop.estimated_maker_edge is None
+
+    def test_missing_best_bid_only_yields_none_proposed_price(self):
+        f = _features()
+        b = _book(best_bid=None, best_ask=0.90)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+
+        assert prop.eligible is False
+        assert prop.proposed_price is None
+
+    def test_missing_best_ask_only_yields_none_proposed_price(self):
+        f = _features()
+        b = _book(best_bid=0.40, best_ask=None)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+
+        assert prop.eligible is False
+        assert prop.proposed_price is None
+
+    def test_eligible_canonical_unchanged(self):
+        """Regression guard for requirement #4: eligible cases must keep
+        existing math (0.41 / 0.44 / 0.08) unchanged after sanitization."""
+        f = _features()
+        b = _book(best_bid=0.40, best_ask=0.90)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+
+        assert prop.eligible is True
+        assert prop.maker_max_bid == pytest.approx(0.44)
+        assert prop.proposed_price == pytest.approx(0.41)
+        assert prop.estimated_maker_edge == pytest.approx(0.08)
+
+    def test_no_negative_proposed_price_ever_persisted(self):
+        """Property-style sweep over a small grid: across many feature/book
+        combinations the planner must never emit a non-None proposed_price
+        less than or equal to zero."""
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        cases = [
+            (0.01, 0.40, 0.90),
+            (0.04, 0.40, 0.90),
+            (0.06, 0.40, 0.90),
+            (0.50, None, None),
+            (0.50, 0.91, 0.90),
+            (0.50, 0.40, 0.90),
+            (0.95, 0.10, 0.90),
+        ]
+        for p_true, bb, ba in cases:
+            f = _features(p_true=p_true)
+            b = _book(best_bid=bb, best_ask=ba)
+            prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+            if prop.proposed_price is not None:
+                assert prop.proposed_price > 0, (
+                    f"non-positive proposed_price {prop.proposed_price} for "
+                    f"p_true={p_true} book=({bb}, {ba})"
+                )
+            if prop.maker_max_bid is not None:
+                assert prop.maker_max_bid > 0, (
+                    f"non-positive maker_max_bid {prop.maker_max_bid} for "
+                    f"p_true={p_true} book=({bb}, {ba})"
+                )
+
+    def test_eligible_implies_all_three_non_none(self):
+        """The dataclass invariant: eligible proposals always have non-None
+        max_bid, proposed_price, and estimated_maker_edge."""
+        f = _features()
+        b = _book(best_bid=0.40, best_ask=0.90)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+        assert prop.eligible is True
+        assert prop.maker_max_bid is not None
+        assert prop.proposed_price is not None
+        assert prop.estimated_maker_edge is not None
+        # Required eligibility constraints from the user spec
+        assert prop.proposed_price > 0
+        assert prop.proposed_price > b.best_bid
+        assert prop.proposed_price < b.best_ask
+        assert prop.proposed_price <= prop.maker_max_bid
+
+
+# ---------------------------------------------------------------------------
 # Freshness gates
 # ---------------------------------------------------------------------------
 

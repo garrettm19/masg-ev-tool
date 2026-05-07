@@ -343,6 +343,59 @@ class TestReadOnly:
         assert client.put("/api/maker/proposals").status_code == 405
 
 
+class TestNullablePriceFieldsSurfacedByApi:
+    """Regression guard for the rejected-proposal price-sanitization fix:
+    None-valued ``maker_max_bid`` / ``proposed_price`` / ``estimated_maker_edge``
+    must serialize to JSON null in the API response, and the summary endpoint
+    must skip None edges in its average."""
+
+    def test_proposed_price_null_in_response_for_low_p_true(self, client_with_store):
+        client, store, _ = client_with_store
+        store.append(
+            _proposal(
+                eligible=False,
+                rejection_reasons=("TRUE_PROB_TOO_LOW", "BOOK_CROSSED_OR_EMPTY"),
+                proposal_id="san-1",
+                maker_max_bid=None,
+                proposed_price=None,
+                estimated_maker_edge=None,
+            ),
+            STATUS_PAPER_REJECTED,
+        )
+        resp = client.get("/api/maker/proposals")
+        assert resp.status_code == 200
+        # Raw JSON null in the response body, not -0.01
+        assert '"proposed_price":null' in resp.text
+        assert '"maker_max_bid":null' in resp.text
+        assert '"estimated_maker_edge":null' in resp.text
+        assert "-0.01" not in resp.text
+
+        rec = resp.json()["proposals"][0]
+        assert rec["proposed_price"] is None
+        assert rec["maker_max_bid"] is None
+        assert rec["estimated_maker_edge"] is None
+
+    def test_summary_average_edge_excludes_none_rejected_records(self, client_with_store):
+        """A rejected record with edge=None must not poison the average over
+        eligible records.  Adds one eligible (edge=0.08) and one rejected
+        (edge=None) — average is 0.08, not NaN/0/error."""
+        client, store, _ = client_with_store
+        store.append(_proposal(eligible=True, proposal_id="elig-1"), STATUS_PAPER_ACTIVE)
+        store.append(
+            _proposal(
+                eligible=False,
+                rejection_reasons=("TRUE_PROB_TOO_LOW",),
+                proposal_id="rej-1",
+                proposed_price=None,
+                maker_max_bid=None,
+                estimated_maker_edge=None,
+            ),
+            STATUS_PAPER_REJECTED,
+        )
+        body = client.get("/api/maker/summary").json()
+        assert body["average_estimated_maker_edge"] == pytest.approx(0.08)
+
+
 class TestExecutionRouteSurfacedByApi:
     """The four route fields written by ``PaperMakerStore`` must round-trip
     through ``GET /api/maker/proposals`` unchanged.  Pre-7bba5c6 records

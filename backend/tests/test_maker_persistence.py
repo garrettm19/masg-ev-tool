@@ -341,6 +341,58 @@ class TestStatusValidation:
 # Iterator
 # ---------------------------------------------------------------------------
 
+class TestNullablePriceFieldsPersistence:
+    """Rejected proposals can carry None for ``maker_max_bid`` /
+    ``proposed_price`` / ``estimated_maker_edge`` when the math cannot
+    produce a realizable bid (low p_true, missing book).  These None
+    values must round-trip through JSONL as JSON null and parse back as
+    None — never as 0, "—", or the string "None"."""
+
+    def test_none_proposed_price_persists_as_json_null(self, tmp_path: Path):
+        store = PaperMakerStore(base_dir=tmp_path)
+        prop = _proposal(
+            eligible=False,
+            rejection_reasons=("TRUE_PROB_TOO_LOW", "BOOK_CROSSED_OR_EMPTY"),
+            maker_max_bid=None,
+            proposed_price=None,
+            estimated_maker_edge=None,
+        )
+        path = store.append(prop, STATUS_PAPER_REJECTED)
+        raw = path.read_text(encoding="utf-8").strip()
+        # JSON null literal, not the string "null" or 0
+        assert '"maker_max_bid":null' in raw
+        assert '"proposed_price":null' in raw
+        assert '"estimated_maker_edge":null' in raw
+        # No negative cents anywhere in the persisted payload
+        assert "-0.01" not in raw
+
+    def test_none_proposed_price_round_trips_to_python_none(self, tmp_path: Path):
+        store = PaperMakerStore(base_dir=tmp_path)
+        prop = _proposal(
+            eligible=False,
+            rejection_reasons=("BOOK_CROSSED_OR_EMPTY",),
+            maker_max_bid=None,
+            proposed_price=None,
+            estimated_maker_edge=None,
+        )
+        store.append(prop, STATUS_PAPER_REJECTED)
+        rec = store.read_recent(days=2)[0]
+        assert rec["maker_max_bid"] is None
+        assert rec["proposed_price"] is None
+        assert rec["estimated_maker_edge"] is None
+
+    def test_eligible_record_keeps_concrete_numbers(self, tmp_path: Path):
+        """Sanity: eligible records still persist concrete float values for
+        the three price-shaped fields (the eligible invariant)."""
+        store = PaperMakerStore(base_dir=tmp_path)
+        prop = _proposal()  # default factory: 0.41 / 0.44 / 0.08
+        store.append(prop, STATUS_PAPER_ACTIVE)
+        rec = store.read_recent(days=2)[0]
+        assert rec["proposed_price"] == 0.41
+        assert rec["maker_max_bid"] == 0.44
+        assert rec["estimated_maker_edge"] == 0.08
+
+
 class TestExecutionRoutePersistence:
     """Execution route fields survive JSONL round-trip."""
 

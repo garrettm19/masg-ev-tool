@@ -15,6 +15,23 @@ Math
     candidate_bid   = round_down_to_tick(best_bid + tick)
     proposed_price  = min(candidate_bid, maker_max_bid)
     estimated_maker_edge = p_true - proposed_price - cost_buffer
+
+Sanitization
+------------
+``maker_max_bid`` / ``proposed_price`` / ``estimated_maker_edge`` become
+``None`` instead of carrying impossible negative-cents values when the
+math cannot produce a realizable bid:
+
+    * ``maker_max_bid <= 0``           — p_true too low to clear required
+                                         edge + cost buffer.
+    * Best bid or best ask missing,
+      or book crossed/locked, or the
+      candidate inside-spread bid is
+      not strictly positive.
+
+In all such cases the proposal is still persisted (with ``eligible=False``
+and the corresponding policy reason codes) so the audit trail is complete,
+but the price-shaped fields are ``None`` rather than ``-0.01``.
 """
 from __future__ import annotations
 
@@ -78,11 +95,15 @@ class MakerProposal:
     book_fetched_at: float
     fd_fetched_at: float
 
-    # Math
-    maker_max_bid: float
-    proposed_price: float
+    # Math.  ``None`` whenever the planner cannot produce a realizable bid
+    # (low p_true, missing book, crossed book) — see module docstring.
+    # Eligible proposals always have non-None values; the policy table
+    # guarantees this via _suggested_bid_inside_spread / _proposed_below_max_bid
+    # / _maker_edge_meets_min, all of which fail when their input is None.
+    maker_max_bid: float | None
+    proposed_price: float | None
     tick_size: float
-    estimated_maker_edge: float
+    estimated_maker_edge: float | None
 
     # Eligibility
     eligible: bool
@@ -151,18 +172,38 @@ def plan_maker_proposal(
     required_edge = _required_edge_for(features, engine_cfg)
     cost_buffer = _cost_buffer_for(features, engine_cfg)
 
-    maker_max_bid = round_down_to_tick(features.p_true - required_edge - cost_buffer)
+    # maker_max_bid is the math-derived ceiling: highest price at which the
+    # required edge survives.  When it computes <= 0 the candidate is
+    # un-bidable (p_true too low) — surface as None instead of persisting an
+    # impossible negative-cents threshold.
+    maker_max_bid_raw = round_down_to_tick(
+        features.p_true - required_edge - cost_buffer
+    )
+    maker_max_bid: float | None = (
+        maker_max_bid_raw if maker_max_bid_raw > 0 else None
+    )
 
-    if book.best_bid is None:
-        # No best_bid → cannot propose anything inside-spread.  Use
-        # maker_max_bid as a placeholder so policy still produces a complete
-        # eligibility trace; BOOK_CROSSED_OR_EMPTY will reject.
-        candidate_bid = maker_max_bid
+    # proposed_price requires: positive maker_max_bid, both sides of the
+    # book present and not crossed, and a strictly positive candidate.  Any
+    # failure leaves it None and the policy table rejects the proposal via
+    # BOOK_CROSSED_OR_EMPTY / BID_NOT_INSIDE_SPREAD / etc.
+    proposed_price: float | None
+    if (
+        maker_max_bid is None
+        or book.best_bid is None
+        or book.best_ask is None
+        or book.best_bid >= book.best_ask
+    ):
+        proposed_price = None
     else:
         candidate_bid = round_down_to_tick(book.best_bid + TICK_DOLLARS)
+        candidate = min(candidate_bid, maker_max_bid)
+        proposed_price = candidate if candidate > 0 else None
 
-    proposed_price = min(candidate_bid, maker_max_bid)
-    estimated_maker_edge = round(features.p_true - proposed_price - cost_buffer, 4)
+    estimated_maker_edge: float | None = (
+        None if proposed_price is None
+        else round(features.p_true - proposed_price - cost_buffer, 4)
+    )
 
     ctx = MakerContext(
         book=book,
@@ -175,7 +216,14 @@ def plan_maker_proposal(
     eligible, reasons, rule_evals = evaluate_maker_eligibility(features, engine_cfg, ctx)
 
     notes: list[str] = ["paper_only"]
-    if book.best_ask is not None and book.best_ask <= maker_max_bid:
+    # TAKE_NOT_MAKE only meaningful when both maker_max_bid and best_ask
+    # exist — without them the comparison is undefined, not "taker would
+    # clear the bar."
+    if (
+        book.best_ask is not None
+        and maker_max_bid is not None
+        and book.best_ask <= maker_max_bid
+    ):
         # Taking the current ask itself clears the required_edge bar — the
         # taker scanner already covers this case.  Record the note so the
         # audit trail explains why a maker proposal might be redundant.

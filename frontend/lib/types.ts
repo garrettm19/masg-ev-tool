@@ -180,11 +180,13 @@ export interface MakerProposal {
   book_fetched_at: number;
   fd_fetched_at: number;
 
-  // Math
-  maker_max_bid: number;
-  proposed_price: number;
+  // Math.  ``null`` when the planner cannot produce a realizable bid
+  // (low p_true, missing book, crossed book).  Eligible proposals always
+  // have non-null values; the policy enforces this invariant.
+  maker_max_bid: number | null;
+  proposed_price: number | null;
   tick_size: number;
-  estimated_maker_edge: number;
+  estimated_maker_edge: number | null;
 
   // Eligibility
   eligible: boolean;
