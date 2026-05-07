@@ -260,6 +260,20 @@ export interface MakerSummaryRejectionReason {
   count: number;
 }
 
+// Compact view of the rejected record with the highest estimated_maker_edge
+// among records that had real book data.  Surfaces "how close did the
+// scan get to producing an eligible bid?" in the dashboard.
+export interface ClosestRejectedRecord {
+  side: string;
+  event_label: string;
+  best_bid: number | null;
+  best_ask: number | null;
+  proposed_price: number | null;
+  maker_max_bid: number | null;
+  estimated_maker_edge: number | null;
+  rejection_reasons: string[];
+}
+
 export interface MakerSummary {
   days: number;
   total: number;
@@ -269,6 +283,17 @@ export interface MakerSummary {
   by_platform: Record<string, number>;
   top_rejection_reasons: MakerSummaryRejectionReason[];
   average_estimated_maker_edge: number | null;
+  // Near-miss diagnostics — answer "did the scan have real near-misses
+  // or just unusable input?"  All counts apply to whatever slice the
+  // endpoint returned (full audit or latest run).
+  records_with_real_book: number;
+  records_with_valid_inside_spread_possible: number;
+  rejected_for_edge_only: number;
+  closest_rejected_edge: number | null;
+  closest_rejected_record: ClosestRejectedRecord | null;
+  // First failing reason per record only (collapses the multi-reason
+  // noise of top_rejection_reasons, which is preserved for debug).
+  primary_rejection_reasons: MakerSummaryRejectionReason[];
 }
 
 export interface SnapshotStatus {

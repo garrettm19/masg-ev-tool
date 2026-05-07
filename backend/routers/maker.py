@@ -68,6 +68,20 @@ class TopRejectionReason(BaseModel):
     count: int
 
 
+class ClosestRejectedRecord(BaseModel):
+    """Compact view of the rejected record with the highest
+    ``estimated_maker_edge`` among records that had real book data.
+    Used by the dashboard to answer "how close did we get this scan?"."""
+    side: str
+    event_label: str
+    best_bid: float | None
+    best_ask: float | None
+    proposed_price: float | None
+    maker_max_bid: float | None
+    estimated_maker_edge: float | None
+    rejection_reasons: list[str]
+
+
 class MakerSummaryResponse(BaseModel):
     days: int
     total: int
@@ -77,11 +91,60 @@ class MakerSummaryResponse(BaseModel):
     by_platform: dict[str, int]
     top_rejection_reasons: list[TopRejectionReason]
     average_estimated_maker_edge: float | None
+    # Near-miss diagnostics — answer "did we have real near-misses or just
+    # noisy unusable records?".  All counts apply to whatever records the
+    # endpoint is summarizing (full audit or latest run).
+    records_with_real_book: int
+    records_with_valid_inside_spread_possible: int
+    rejected_for_edge_only: int
+    closest_rejected_edge: float | None
+    closest_rejected_record: ClosestRejectedRecord | None
+    # First failing reason per record only — collapses the noise of records
+    # that accumulate 4-5 reasons.  ``top_rejection_reasons`` (every reason
+    # counted) is preserved for debug continuity.
+    primary_rejection_reasons: list[TopRejectionReason]
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+# Tick size used to evaluate whether an inside-spread bid is mathematically
+# possible.  Mirrors services.maker.tick.TICK_DOLLARS but kept local to the
+# router so summary aggregation is independent of maker-pipeline imports.
+_TICK_DOLLARS = 0.01
+
+# Edge-only failures: rejection codes whose presence (with no structural
+# blocker) means "the only thing standing between this candidate and
+# eligibility was the edge math."  Used for ``rejected_for_edge_only``.
+_EDGE_ONLY_REASONS: frozenset[str] = frozenset({
+    "MAKER_EDGE_TOO_LOW",
+    "BID_ABOVE_MAX",
+})
+
+# Structural blockers — if any of these fired, the rejection isn't an edge
+# near-miss because something more fundamental was wrong (no book, stale
+# data, scope mismatch, etc.).  The presence of any structural reason
+# disqualifies a record from ``rejected_for_edge_only``.
+_STRUCTURAL_BLOCKERS: frozenset[str] = frozenset({
+    "BOOK_CROSSED_OR_EMPTY",
+    "BOOK_STALE",
+    "SPREAD_TOO_NARROW",
+    "BID_NOT_INSIDE_SPREAD",
+    "FD_STALE",
+    "PLATFORM_OUT_OF_SCOPE",
+    "MARKET_TYPE_OUT_OF_SCOPE",
+    "MAKER_DISABLED",
+})
+
+
+def _has_real_book(rec: dict) -> bool:
+    """True when both top-of-book sides are present numbers (not None,
+    not the JSON-null placeholder for missing data)."""
+    bb = rec.get("best_bid")
+    ba = rec.get("best_ask")
+    return isinstance(bb, (int, float)) and isinstance(ba, (int, float))
+
 
 def _filter_to_latest_run(records: list[dict]) -> list[dict]:
     """Narrow to records sharing the run_id of the chronologically newest
@@ -317,7 +380,15 @@ def maker_summary(
     by_status: Counter[str] = Counter()
     by_platform: Counter[str] = Counter()
     rejection_reasons: Counter[str] = Counter()
+    primary_reasons: Counter[str] = Counter()
     edges: list[float] = []
+
+    # Near-miss diagnostics
+    records_with_real_book = 0
+    records_with_valid_inside_spread_possible = 0
+    rejected_for_edge_only = 0
+    closest_edge: float | None = None
+    closest_record: ClosestRejectedRecord | None = None
 
     for rec in records:
         st = rec.get("status", "")
@@ -326,18 +397,74 @@ def maker_summary(
         plat = rec.get("platform", "")
         if plat:
             by_platform[plat] += 1
+
+        # Real-book / inside-spread-possible counts apply to every record
+        # regardless of eligibility — they describe the input the maker
+        # pass had to work with, not the verdict.
+        has_real_book = _has_real_book(rec)
+        if has_real_book:
+            records_with_real_book += 1
+            bb = float(rec["best_bid"])  # type: ignore[arg-type]
+            ba = float(rec["best_ask"])  # type: ignore[arg-type]
+            # An inside-spread bid is mathematically possible iff there
+            # is at least one tick of room above best_bid below best_ask.
+            if bb + _TICK_DOLLARS < ba:
+                records_with_valid_inside_spread_possible += 1
+
         if rec.get("eligible"):
             edge = rec.get("estimated_maker_edge")
             if isinstance(edge, (int, float)):
                 edges.append(float(edge))
-        else:
-            for code in rec.get("rejection_reasons") or []:
-                if isinstance(code, str):
-                    rejection_reasons[code] += 1
+            continue
+
+        # --- Rejected branch ---
+        reasons = [
+            r for r in (rec.get("rejection_reasons") or [])
+            if isinstance(r, str)
+        ]
+        for code in reasons:
+            rejection_reasons[code] += 1
+        # Primary rejection = first failing rule (policy-iteration order),
+        # which collapses the multi-reason noise that polluted
+        # top_rejection_reasons.
+        if reasons:
+            primary_reasons[reasons[0]] += 1
+
+        # Edge-only near-miss: real book + at least one edge-only reason +
+        # zero structural blockers.  This is the rejected pile that's
+        # closest to becoming eligible.
+        if has_real_book and reasons:
+            reason_set = set(reasons)
+            has_edge_reason = bool(reason_set & _EDGE_ONLY_REASONS)
+            has_structural = bool(reason_set & _STRUCTURAL_BLOCKERS)
+            if has_edge_reason and not has_structural:
+                rejected_for_edge_only += 1
+
+        # Closest edge among rejected records that had a real book.
+        # Excludes None edges by isinstance guard.
+        edge = rec.get("estimated_maker_edge")
+        if has_real_book and isinstance(edge, (int, float)):
+            edge_f = float(edge)
+            if closest_edge is None or edge_f > closest_edge:
+                closest_edge = edge_f
+                closest_record = ClosestRejectedRecord(
+                    side=str(rec.get("side") or rec.get("display_side") or ""),
+                    event_label=str(rec.get("event_label") or ""),
+                    best_bid=rec.get("best_bid"),
+                    best_ask=rec.get("best_ask"),
+                    proposed_price=rec.get("proposed_price"),
+                    maker_max_bid=rec.get("maker_max_bid"),
+                    estimated_maker_edge=edge_f,
+                    rejection_reasons=reasons,
+                )
 
     top = [
         TopRejectionReason(reason=code, count=cnt)
         for code, cnt in rejection_reasons.most_common(top_n)
+    ]
+    primary_top = [
+        TopRejectionReason(reason=code, count=cnt)
+        for code, cnt in primary_reasons.most_common(top_n)
     ]
 
     return MakerSummaryResponse(
@@ -351,4 +478,12 @@ def maker_summary(
         average_estimated_maker_edge=(
             round(sum(edges) / len(edges), 6) if edges else None
         ),
+        records_with_real_book=records_with_real_book,
+        records_with_valid_inside_spread_possible=records_with_valid_inside_spread_possible,
+        rejected_for_edge_only=rejected_for_edge_only,
+        closest_rejected_edge=(
+            round(closest_edge, 6) if closest_edge is not None else None
+        ),
+        closest_rejected_record=closest_record,
+        primary_rejection_reasons=primary_top,
     )

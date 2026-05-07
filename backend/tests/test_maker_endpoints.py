@@ -343,6 +343,223 @@ class TestReadOnly:
         assert client.put("/api/maker/proposals").status_code == 405
 
 
+class TestNearMissDiagnostics:
+    """Latest-run summary explains *why* no eligible proposal appeared.
+    Counts must distinguish between unusable input (no book, crossed,
+    stale) and real near-misses where only the edge math fell short."""
+
+    def _append_with_book(
+        self,
+        store: PaperMakerStore,
+        *,
+        proposal_id: str,
+        best_bid: float | None,
+        best_ask: float | None,
+        rejection_reasons: tuple[str, ...] = (),
+        eligible: bool = False,
+        estimated_maker_edge: float | None = None,
+        proposed_price: float | None = None,
+        maker_max_bid: float | None = None,
+        side: str = "Player A",
+        event_label: str = "Player A vs Player B",
+    ):
+        from services.maker.planner import MakerProposal
+        prop = _proposal(
+            eligible=eligible,
+            rejection_reasons=rejection_reasons,
+            proposal_id=proposal_id,
+            side=side,
+            event_label=event_label,
+        )
+        with_book = MakerProposal(**{
+            **{f.name: getattr(prop, f.name)
+               for f in prop.__dataclass_fields__.values()},
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "proposed_price": proposed_price,
+            "maker_max_bid": maker_max_bid,
+            "estimated_maker_edge": estimated_maker_edge,
+        })
+        store.append(
+            with_book,
+            STATUS_PAPER_ACTIVE if eligible else STATUS_PAPER_REJECTED,
+        )
+
+    def test_no_real_books_zero_diagnostics(self, client_with_store):
+        """Every record has best_bid/best_ask = None: real-book counts are 0
+        and there is no closest_rejected_record to surface."""
+        client, store, _ = client_with_store
+        for i in range(3):
+            self._append_with_book(
+                store,
+                proposal_id=f"nb-{i}",
+                best_bid=None,
+                best_ask=None,
+                rejection_reasons=("BOOK_CROSSED_OR_EMPTY", "BID_NOT_INSIDE_SPREAD"),
+            )
+        body = client.get("/api/maker/summary").json()
+        assert body["records_with_real_book"] == 0
+        assert body["records_with_valid_inside_spread_possible"] == 0
+        assert body["rejected_for_edge_only"] == 0
+        assert body["closest_rejected_edge"] is None
+        assert body["closest_rejected_record"] is None
+
+    def test_real_books_but_no_inside_spread_possible(self, client_with_store):
+        """Crossed and 1-tick spreads count as real-book but inside-spread
+        impossible.  Exactly the scenario where the maker pass had data but
+        the spread was too tight to seat a maker bid."""
+        client, store, _ = client_with_store
+        # Crossed: best_bid >= best_ask
+        self._append_with_book(
+            store, proposal_id="x-crossed",
+            best_bid=0.91, best_ask=0.90,
+            rejection_reasons=("BOOK_CROSSED_OR_EMPTY",),
+        )
+        # 1-tick spread: bb + tick == ba, no room inside
+        self._append_with_book(
+            store, proposal_id="x-1tick",
+            best_bid=0.45, best_ask=0.46,
+            rejection_reasons=("SPREAD_TOO_NARROW",),
+        )
+        body = client.get("/api/maker/summary").json()
+        assert body["records_with_real_book"] == 2
+        assert body["records_with_valid_inside_spread_possible"] == 0
+
+    def test_real_book_edge_near_miss_counted(self, client_with_store):
+        """A record with real book + only edge-related reasons (no
+        structural blockers) counts as edge-only near-miss.  Its edge is
+        the closest_rejected_edge if it's the highest among rejected
+        real-book records."""
+        client, store, _ = client_with_store
+        # Edge-only near-miss: real book, MAKER_EDGE_TOO_LOW, no structural
+        self._append_with_book(
+            store, proposal_id="near-miss",
+            best_bid=0.40, best_ask=0.50,
+            proposed_price=0.41, maker_max_bid=0.41,
+            estimated_maker_edge=0.04,
+            rejection_reasons=("MAKER_EDGE_TOO_LOW",),
+            side="Player Near", event_label="Player Near vs Other",
+        )
+        # A structural-blocker record alongside — must NOT count as edge-only
+        self._append_with_book(
+            store, proposal_id="structural",
+            best_bid=0.40, best_ask=0.41,
+            estimated_maker_edge=0.06,   # higher edge but structural blocker
+            rejection_reasons=("SPREAD_TOO_NARROW", "MAKER_EDGE_TOO_LOW"),
+        )
+        body = client.get("/api/maker/summary").json()
+        assert body["records_with_real_book"] == 2
+        assert body["rejected_for_edge_only"] == 1
+        # closest_rejected_edge picks the highest across BOTH (regardless of
+        # structural status) — the diagnostic answers "how close did any
+        # rejected record get with a real book?"
+        assert body["closest_rejected_edge"] == pytest.approx(0.06)
+        rec = body["closest_rejected_record"]
+        assert rec is not None
+        assert rec["estimated_maker_edge"] == pytest.approx(0.06)
+
+    def test_closest_rejected_edge_excludes_null_edges(self, client_with_store):
+        """Rejected records whose estimated_maker_edge is None must not be
+        considered for closest_rejected_edge — that field is for actual
+        edge near-misses, not ineligibility for unrelated reasons."""
+        client, store, _ = client_with_store
+        # All rejected records here have real book but None edge (e.g.,
+        # because proposed_price was None due to crossed book or low p_true)
+        self._append_with_book(
+            store, proposal_id="null-1",
+            best_bid=0.40, best_ask=0.50,
+            estimated_maker_edge=None,
+            rejection_reasons=("BID_NOT_INSIDE_SPREAD",),
+        )
+        self._append_with_book(
+            store, proposal_id="null-2",
+            best_bid=0.30, best_ask=0.45,
+            estimated_maker_edge=None,
+            rejection_reasons=("BOOK_STALE",),
+        )
+        body = client.get("/api/maker/summary").json()
+        assert body["records_with_real_book"] == 2
+        assert body["closest_rejected_edge"] is None
+        assert body["closest_rejected_record"] is None
+
+    def test_primary_rejection_reasons_count_first_only(self, client_with_store):
+        """``primary_rejection_reasons`` counts only the first reason per
+        record, collapsing the multi-reason noise.  Three records each
+        starting with BOOK_CROSSED_OR_EMPTY must give count=3 for that
+        single reason — not 9 (3 records × 3 reasons each)."""
+        client, store, _ = client_with_store
+        for i in range(3):
+            self._append_with_book(
+                store, proposal_id=f"multi-{i}",
+                best_bid=None, best_ask=None,
+                rejection_reasons=(
+                    "BOOK_CROSSED_OR_EMPTY",
+                    "SPREAD_TOO_NARROW",
+                    "BID_NOT_INSIDE_SPREAD",
+                ),
+            )
+        body = client.get("/api/maker/summary").json()
+        primary = {r["reason"]: r["count"] for r in body["primary_rejection_reasons"]}
+        assert primary == {"BOOK_CROSSED_OR_EMPTY": 3}
+        # The legacy top_rejection_reasons still counts every reason
+        legacy = {r["reason"]: r["count"] for r in body["top_rejection_reasons"]}
+        assert legacy["BOOK_CROSSED_OR_EMPTY"] == 3
+        assert legacy["SPREAD_TOO_NARROW"] == 3
+        assert legacy["BID_NOT_INSIDE_SPREAD"] == 3
+
+    def test_diagnostics_compose_with_latest_run(self, client_with_store):
+        """latest_run=true + diagnostics: counts apply only to the newest
+        scan's records.  Older runs' edge near-misses must not bleed into
+        the latest-run closest_rejected_edge."""
+        from services.maker.planner import MakerProposal
+        import time
+        client, store, _ = client_with_store
+
+        # Run A (older) — has a 0.09 near-miss
+        prop_a = _proposal(
+            eligible=False, rejection_reasons=("MAKER_EDGE_TOO_LOW",),
+            proposal_id="a-near", created_at=time.time() - 60.0,
+        )
+        store.append(
+            MakerProposal(**{
+                **{f.name: getattr(prop_a, f.name)
+                   for f in prop_a.__dataclass_fields__.values()},
+                "best_bid": 0.40, "best_ask": 0.50,
+                "proposed_price": 0.41, "maker_max_bid": 0.41,
+                "estimated_maker_edge": 0.09,
+                "run_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            }),
+            STATUS_PAPER_REJECTED,
+        )
+        # Run B (newer) — has a 0.04 near-miss
+        prop_b = _proposal(
+            eligible=False, rejection_reasons=("MAKER_EDGE_TOO_LOW",),
+            proposal_id="b-near", created_at=time.time(),
+        )
+        store.append(
+            MakerProposal(**{
+                **{f.name: getattr(prop_b, f.name)
+                   for f in prop_b.__dataclass_fields__.values()},
+                "best_bid": 0.40, "best_ask": 0.50,
+                "proposed_price": 0.41, "maker_max_bid": 0.41,
+                "estimated_maker_edge": 0.04,
+                "run_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            }),
+            STATUS_PAPER_REJECTED,
+        )
+
+        full = client.get("/api/maker/summary").json()
+        assert full["closest_rejected_edge"] == pytest.approx(0.09)
+
+        latest = client.get(
+            "/api/maker/summary", params={"latest_run": "true"}
+        ).json()
+        # Latest run only sees run B → 0.04 near-miss
+        assert latest["closest_rejected_edge"] == pytest.approx(0.04)
+        assert latest["records_with_real_book"] == 1
+        assert latest["rejected_for_edge_only"] == 1
+
+
 class TestLatestRunFilter:
     """``/api/maker/proposals?latest_run=true`` and
     ``/api/maker/summary?latest_run=true`` narrow to the most recent

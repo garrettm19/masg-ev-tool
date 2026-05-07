@@ -53,6 +53,11 @@ function fmtPct(value: number, digits = 0): string {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+function fmtPctOrDash(value: number | null | undefined, digits = 1): string {
+  if (value == null) return "—";
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
 interface Props {
   // Bumped by DashboardClient whenever a scan finishes — triggers a summary
   // refetch so the latest-run numbers reflect the freshest scan.
@@ -147,6 +152,15 @@ export function PaperMakerControls({ scanRefreshKey }: Props) {
   const total = summary?.total ?? 0;
   const eligible = summary?.eligible ?? 0;
   const rejected = summary?.rejected ?? 0;
+  const realBooks = summary?.records_with_real_book ?? 0;
+  const closestEdge = summary?.closest_rejected_edge ?? null;
+  const topPrimaryRejection =
+    summary?.primary_rejection_reasons?.[0]?.reason ?? null;
+  // Surface a muted explanation strip when the latest scan produced no
+  // eligibles — the dashboard's most common "why didn't anything happen?"
+  // moment.  Only render the strip when we actually have a summary to
+  // describe; while loading or on error, the existing fallbacks suffice.
+  const showNoEligibleExplain = summary != null && eligible === 0 && total > 0;
 
   return (
     <>
@@ -218,6 +232,53 @@ export function PaperMakerControls({ scanRefreshKey }: Props) {
             title="Proposals persisted for audit but rejected by the maker policy."
           />
         </div>
+
+        {/* Near-miss diagnostics row — explains why no eligible bid appeared.
+            Empty/loading state still renders so the layout stays stable. */}
+        <div
+          className="px-4 py-2.5 border-t grid gap-3"
+          style={{
+            borderColor: "var(--border-subtle)",
+            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          }}
+        >
+          <Stat
+            label="Latest Run · Real Books"
+            value={String(realBooks)}
+            title="Records where both best_bid and best_ask were present (not None)."
+          />
+          <Stat
+            label="Latest Run · Closest Edge"
+            value={fmtPctOrDash(closestEdge, 2)}
+            title="Highest estimated_maker_edge among rejected records that had real book data — how close did the scan get?"
+          />
+          <Stat
+            label="Top Primary Rejection"
+            value={topPrimaryRejection ?? "—"}
+            title="First failing rule per record (collapses multi-reason noise from top_rejection_reasons)."
+          />
+        </div>
+
+        {showNoEligibleExplain && (
+          <div
+            className="px-4 py-2 border-t font-mono"
+            style={{
+              borderColor: "var(--border-subtle)",
+              fontSize: "10px",
+              color: "var(--fg-muted)",
+            }}
+          >
+            No eligible paper maker bids this scan. Closest rejected edge:{" "}
+            <span style={{ color: "var(--fg-secondary)" }}>
+              {fmtPctOrDash(closestEdge, 2)}
+            </span>
+            , top blocker:{" "}
+            <span style={{ color: "var(--fg-secondary)" }}>
+              {topPrimaryRejection ?? "—"}
+            </span>
+            .
+          </div>
+        )}
 
         {error && (
           <div
