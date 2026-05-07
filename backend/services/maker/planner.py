@@ -99,6 +99,20 @@ class MakerProposal:
     created_at: float
     notes: tuple[str, ...]
 
+    # Display + execution route — disambiguates ``market_id``/``side`` for
+    # 2-way Kalshi where the cheapest YES exposure may route through the
+    # opposing market's NO contract.  ``display_side`` mirrors ``side``
+    # for UI clarity.  ``execution_market_id`` and
+    # ``execution_contract_side`` describe the actual contract that a
+    # paper order would post on.  ``execution_route`` is a coarse
+    # categorical: ``"direct_yes"`` or ``"equivalent_no"``.  Defaults
+    # preserve legacy direct-YES semantics when callers don't populate
+    # them (older fixtures, legacy persisted records).
+    display_side: str = ""
+    execution_market_id: str = ""
+    execution_contract_side: str = "yes"
+    execution_route: str = "direct_yes"
+
 
 def _required_edge_for(features: MarketFeatures, cfg: EngineConfig) -> float:
     """Mirror the taker rule_engine ``_edge_meets_threshold`` minimum-edge
@@ -170,6 +184,15 @@ def plan_maker_proposal(
         "Maker fills are not guaranteed and may occur when the market is moving against you."
     )
 
+    # Resolve the execution route from the feature's per-side info.  Falls
+    # back to direct YES on the canonical market_id when route info is
+    # absent (legacy features, non-Kalshi platforms, missing TOB).
+    execution_market_id = features.best_bid_market_id or features.market_id
+    execution_contract_side = features.best_bid_contract_side or "yes"
+    execution_route = (
+        "direct_yes" if execution_contract_side == "yes" else "equivalent_no"
+    )
+
     return MakerProposal(
         proposal_id=str(uuid.uuid4()),
         platform=features.platform,
@@ -198,4 +221,8 @@ def plan_maker_proposal(
         taker_edge_at_planning=features.edge,
         created_at=now,
         notes=tuple(notes),
+        display_side=features.side,
+        execution_market_id=execution_market_id,
+        execution_contract_side=execution_contract_side,
+        execution_route=execution_route,
     )

@@ -154,6 +154,33 @@ def _safe_max_positive(*values: float) -> float | None:
     return round(max(positives), 4) if positives else None
 
 
+def _route_best_yes_bid(
+    direct_bid: float,
+    opp_no_bid: float,
+    direct_ticker: str,
+    opp_ticker: str,
+) -> tuple[float | None, str | None, str | None]:
+    """Pick the best YES bid route across the two equivalent paths in a
+    2-way Kalshi event.
+
+    Returns ``(value, market_id, contract_side)`` where contract_side is
+    ``"yes"`` for the direct-YES route or ``"no"`` for the equivalent-NO
+    route on the opposing ticker.  Ties prefer the direct YES route.
+    Returns ``(None, None, None)`` when neither route has a positive bid.
+    """
+    candidates: list[tuple[float, str, str]] = []
+    if direct_bid > 0:
+        candidates.append((direct_bid, direct_ticker, "yes"))
+    if opp_no_bid > 0:
+        candidates.append((opp_no_bid, opp_ticker, "no"))
+    if not candidates:
+        return None, None, None
+    # Sort: highest bid first; on tie, prefer direct YES.
+    candidates.sort(key=lambda c: (-c[0], 0 if c[2] == "yes" else 1))
+    best = candidates[0]
+    return round(best[0], 4), best[1], best[2]
+
+
 def _identify_m1_team(
     m1_ticker: str,
     m1_title: str,
@@ -366,14 +393,24 @@ def _build_event_markets(
         # in 3-way, so it is NOT an equivalent YES_M1 bid.  Direct only.
         best_m1_bid = round(m1["yes_bid"], 4) if m1["yes_bid"] > 0 else None
         best_m2_bid = round(m2["yes_bid"], 4) if m2["yes_bid"] > 0 else None
+        m1_bid_ticker = m1["ticker"] if best_m1_bid is not None else None
+        m1_bid_side = "yes" if best_m1_bid is not None else None
+        m2_bid_ticker = m2["ticker"] if best_m2_bid is not None else None
+        m2_bid_side = "yes" if best_m2_bid is not None else None
     else:
         # 2-way market: pick cheapest route across the pair
         best_m1_player = min(m1["yes_ask"], m2["no_ask"])
         best_m2_player = min(m2["yes_ask"], m1["no_ask"])
         # Symmetric for bids: NO bid on M2 ≡ YES bid on M1 in 2-way, so
-        # best YES_M1 bid = max(M1.yes_bid, M2.no_bid).
-        best_m1_bid = _safe_max_positive(m1["yes_bid"], m2["no_bid"])
-        best_m2_bid = _safe_max_positive(m2["yes_bid"], m1["no_bid"])
+        # best YES_M1 bid = max(M1.yes_bid, M2.no_bid).  Capture which
+        # ticker / contract side the best bid came from so paper-maker
+        # proposals can name the actual execution route.
+        best_m1_bid, m1_bid_ticker, m1_bid_side = _route_best_yes_bid(
+            m1["yes_bid"], m2["no_bid"], m1["ticker"], m2["ticker"]
+        )
+        best_m2_bid, m2_bid_ticker, m2_bid_side = _route_best_yes_bid(
+            m2["yes_bid"], m1["no_bid"], m2["ticker"], m1["ticker"]
+        )
 
     # Validate prices
     if best_m1_player <= 0.02 or best_m1_player >= 0.98:
@@ -439,11 +476,21 @@ def _build_event_markets(
                 bid_ask_spread=spread,
                 best_bid=team_bid,
                 best_ask=round(price, 4),
+                # 3-way: best YES bid is direct on the team's own ticker;
+                # never routed through the opposing NO side because that
+                # would include draw mass.  no_player_* stays None — each
+                # team has its own NormalizedMarket so there is no
+                # complement view to carry.
+                best_bid_market_id=team["ticker"] if team_bid is not None else None,
+                best_bid_contract_side="yes" if team_bid is not None else None,
                 fetched_at=best_fetched,
             ))
         return results
 
-    # 2-way market: single NormalizedMarket with cross-market best prices
+    # 2-way market: single NormalizedMarket with cross-market best prices.
+    # Both M1 and M2 perspectives are carried — the canonical (M1 / yes_player)
+    # pair as best_bid/best_ask + route, and the M2 / no_player pair as the
+    # no_player_* fields.  feature_extractor selects the right pair per side.
     outcome_prices = [
         str(round(best_m1_player, 4)),
         str(round(best_m2_player, 4)),
@@ -468,8 +515,16 @@ def _build_event_markets(
         outcome_prices=outcome_prices,
         event_slug=event_ticker,
         bid_ask_spread=m1_spread,
+        # Canonical (M1 / yes_player) top-of-book and execution route
         best_bid=best_m1_bid,
         best_ask=round(best_m1_player, 4),
+        best_bid_market_id=m1_bid_ticker,
+        best_bid_contract_side=m1_bid_side,
+        # Complement (M2 / no_player) top-of-book and execution route
+        no_player_best_bid=best_m2_bid,
+        no_player_best_ask=round(best_m2_player, 4),
+        no_player_best_bid_market_id=m2_bid_ticker,
+        no_player_best_bid_contract_side=m2_bid_side,
         fetched_at=best_fetched,
     )]
 
@@ -523,5 +578,9 @@ def _single_market_fallback(
         bid_ask_spread=spread,
         best_bid=best_bid,
         best_ask=round(yes_ask, 4),
+        # Single-market fallback: only the direct YES route is available;
+        # there is no paired complement market.
+        best_bid_market_id=ticker if best_bid is not None else None,
+        best_bid_contract_side="yes" if best_bid is not None else None,
         fetched_at=market_fetched_at,
     )

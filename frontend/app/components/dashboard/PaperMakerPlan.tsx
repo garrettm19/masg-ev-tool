@@ -92,9 +92,20 @@ function selectProposal(
 // non-actionable.
 // ---------------------------------------------------------------------------
 
+function executionRouteText(p: MakerProposal): string {
+  const ticker = p.execution_market_id || p.market_id;
+  const side = p.execution_contract_side ?? "yes";
+  // Equivalent-NO routes target the OPPOSING ticker's NO contract.  Direct
+  // YES routes target the canonical ticker's YES contract.
+  const sideLabel = side === "no" ? "NO" : "YES";
+  const suffix = side === "no" ? " (equivalent)" : "";
+  return `${sideLabel} on ${ticker}${suffix}`;
+}
+
 function EligibleProposal({ p }: { p: MakerProposal }) {
   const edgeColor = makerEdgeColor(p.estimated_maker_edge);
   const showTakeNotMakeNote = p.notes.some((n) => n.includes("TAKE_NOT_MAKE"));
+  const isEquivalentNo = (p.execution_contract_side ?? "yes") === "no";
 
   return (
     <>
@@ -159,6 +170,16 @@ function EligibleProposal({ p }: { p: MakerProposal }) {
           </div>
         </div>
 
+        <Row
+          label="Paper Route"
+          value={executionRouteText(p)}
+          valueColor={isEquivalentNo ? "var(--info)" : "var(--fg-secondary)"}
+          title={
+            isEquivalentNo
+              ? "Equivalent route: posting NO on the opposing ticker is economically identical to YES on this team in 2-way."
+              : "Direct YES bid on the team's own ticker."
+          }
+        />
         <Row label="Best Bid" value={fmtCents(p.best_bid)} />
         <Row label="Best Ask" value={fmtCents(p.best_ask)} />
         <Row
@@ -282,6 +303,11 @@ function RejectedProposal({ p }: { p: MakerProposal }) {
 
         {showBookData && (
           <>
+            <Row
+              label="Paper Route"
+              value={executionRouteText(p)}
+              valueColor="var(--fg-muted)"
+            />
             <Row label="Best Bid" value={fmtCents(p.best_bid)} />
             <Row label="Best Ask" value={fmtCents(p.best_ask)} />
             <Row label="Maker Max Bid" value={fmtCents(p.maker_max_bid)} />

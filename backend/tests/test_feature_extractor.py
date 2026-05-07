@@ -720,10 +720,23 @@ class TestPlatformCostBuffer:
 # ---------------------------------------------------------------------------
 
 class TestBestBidAskPassThrough:
+    """Per-side TOB pass-through.
+
+    The yes_player feature inherits the canonical best_bid/best_ask; the
+    no_player feature inherits the complement values (no_player_best_bid /
+    no_player_best_ask) so each team carries its own correct view.  This
+    matters for 2-way Kalshi where the cheapest YES exposure for the
+    no_player team can route through the canonical ticker's NO side.
+    """
+
     def _market_with_book(
         self,
         best_bid: float | None,
         best_ask: float | None,
+        no_player_best_bid: float | None = None,
+        no_player_best_ask: float | None = None,
+        no_player_best_bid_market_id: str | None = None,
+        no_player_best_bid_contract_side: str | None = None,
     ) -> NormalizedMarket:
         return NormalizedMarket(
             platform="kalshi",
@@ -742,23 +755,53 @@ class TestBestBidAskPassThrough:
             event_slug="test",
             best_bid=best_bid,
             best_ask=best_ask,
+            no_player_best_bid=no_player_best_bid,
+            no_player_best_ask=no_player_best_ask,
+            no_player_best_bid_market_id=no_player_best_bid_market_id,
+            no_player_best_bid_contract_side=no_player_best_bid_contract_side,
         )
 
-    def test_best_bid_and_ask_propagated(self):
+    def test_yes_player_inherits_canonical_best_bid_ask(self):
         market = self._market_with_book(best_bid=0.40, best_ask=0.60)
-        event = _make_event()
-        cfg = EngineConfig()
-        features = extract_features(market, event, cfg)
-        # h2h produces two MarketFeatures (one per side); both inherit the
-        # same top-of-book values from the source NormalizedMarket.
-        assert len(features) == 2
-        for f in features:
-            assert f.best_bid == pytest.approx(0.40)
-            assert f.best_ask == pytest.approx(0.60)
+        features = extract_features(market, _make_event(), EngineConfig())
+        yes_feat = next(f for f in features if f.side == "Carlos Alcaraz")
+        assert yes_feat.best_bid == pytest.approx(0.40)
+        assert yes_feat.best_ask == pytest.approx(0.60)
+
+    def test_no_player_uses_complement_when_provided(self):
+        """When the adapter populates no_player_* (the 2-way Kalshi case),
+        the no_player feature's TOB and route fields come from those values,
+        not from the canonical pair."""
+        market = self._market_with_book(
+            best_bid=0.40, best_ask=0.60,
+            no_player_best_bid=0.38, no_player_best_ask=0.42,
+            no_player_best_bid_market_id="K2",
+            no_player_best_bid_contract_side="yes",
+        )
+        features = extract_features(market, _make_event(), EngineConfig())
+        no_feat = next(f for f in features if f.side == "Jannik Sinner")
+        assert no_feat.best_bid == pytest.approx(0.38)
+        assert no_feat.best_ask == pytest.approx(0.42)
+        assert no_feat.best_bid_market_id == "K2"
+        assert no_feat.best_bid_contract_side == "yes"
+
+    def test_no_player_falls_back_to_none_when_complement_unset(self):
+        """If the adapter doesn't populate no_player_* (3-way emit, single-
+        fallback, Polymarket), the no_player feature gets None on TOB.  The
+        maker pass will reject it with BOOK_CROSSED_OR_EMPTY — correct,
+        because there is no per-side data to route a maker order with."""
+        market = self._market_with_book(best_bid=0.40, best_ask=0.60)
+        features = extract_features(market, _make_event(), EngineConfig())
+        no_feat = next(f for f in features if f.side == "Jannik Sinner")
+        assert no_feat.best_bid is None
+        assert no_feat.best_ask is None
+        assert no_feat.best_bid_market_id is None
+        assert no_feat.best_bid_contract_side is None
 
     def test_defaults_to_none_when_unset(self):
-        """A NormalizedMarket without best_bid/best_ask leaves them None
-        on the produced MarketFeatures (matches the Polymarket adapter today)."""
+        """A NormalizedMarket with neither canonical nor complement TOB —
+        e.g., the Polymarket adapter today — leaves both features with
+        all None on these fields."""
         market = NormalizedMarket(
             platform="polymarket",
             market_id="PM1",
@@ -780,18 +823,33 @@ class TestBestBidAskPassThrough:
         for f in features:
             assert f.best_bid is None
             assert f.best_ask is None
+            assert f.best_bid_market_id is None
+            assert f.best_bid_contract_side is None
 
-    def test_best_bid_none_with_ask_set(self):
-        """Asymmetric case (kalshi single-fallback with no resting bid):
-        best_ask populated, best_bid None.  Both flow through cleanly."""
-        market = self._market_with_book(best_bid=None, best_ask=0.60)
+    def test_canonical_route_propagated(self):
+        """The canonical best_bid_market_id / best_bid_contract_side flow
+        through to the yes_player feature."""
+        market = self._market_with_book(best_bid=0.40, best_ask=0.60)
+        # Override the route fields by reconstructing with explicit values
+        market = NormalizedMarket(
+            platform=market.platform, market_id=market.market_id,
+            event=market.event, market_type=market.market_type,
+            side=market.side, line=market.line, price=market.price,
+            liquidity=market.liquidity, url=market.url,
+            timestamp=market.timestamp, question=market.question,
+            end_date=market.end_date, outcome_prices=market.outcome_prices,
+            event_slug=market.event_slug,
+            best_bid=0.40, best_ask=0.60,
+            best_bid_market_id="K1",
+            best_bid_contract_side="yes",
+        )
         features = extract_features(market, _make_event(), EngineConfig())
-        for f in features:
-            assert f.best_bid is None
-            assert f.best_ask == pytest.approx(0.60)
+        yes_feat = next(f for f in features if f.side == "Carlos Alcaraz")
+        assert yes_feat.best_bid_market_id == "K1"
+        assert yes_feat.best_bid_contract_side == "yes"
 
     def test_passthrough_does_not_alter_existing_pricing_fields(self):
-        """Adding best_bid/best_ask must not perturb pm_price, pm_price_no,
+        """Adding TOB/route fields must not perturb pm_price, pm_price_no,
         pm_price_effective, edge, bid_ask_spread, price_fetched_at."""
         market = NormalizedMarket(
             platform="kalshi",
@@ -811,14 +869,19 @@ class TestBestBidAskPassThrough:
             bid_ask_spread=0.02,
             best_bid=0.58,
             best_ask=0.60,
+            best_bid_market_id="K1",
+            best_bid_contract_side="yes",
             fetched_at=1234567890.0,
         )
         features = extract_features(market, _make_event(), EngineConfig())
         assert len(features) == 2
-        # Sanity: existing fields preserved exactly
+        # Sanity: existing pricing/staleness fields preserved exactly
         for f in features:
             assert f.bid_ask_spread == pytest.approx(0.02)
             assert f.price_fetched_at == 1234567890.0
-            # and the new fields are also there
-            assert f.best_bid == pytest.approx(0.58)
-            assert f.best_ask == pytest.approx(0.60)
+        # Yes-player gets canonical TOB; no-player falls back to None
+        yes_feat = next(f for f in features if f.side == "Carlos Alcaraz")
+        assert yes_feat.best_bid == pytest.approx(0.58)
+        assert yes_feat.best_ask == pytest.approx(0.60)
+        assert yes_feat.best_bid_market_id == "K1"
+        assert yes_feat.best_bid_contract_side == "yes"

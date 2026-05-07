@@ -119,6 +119,12 @@ class MarketFeatures:
     best_bid: float | None = None
     best_ask: float | None = None
 
+    # Execution route for this side's best YES bid.  ``best_bid_market_id``
+    # may differ from ``market_id`` when the cheapest YES exposure routes
+    # through the opposing market's NO side in 2-way Kalshi.
+    best_bid_market_id: str | None = None
+    best_bid_contract_side: str | None = None     # "yes" | "no"
+
     # Metadata quality
     has_end_date: bool = False               # market has a resolution date
     has_outcome_prices: bool = False          # market has parseable outcome prices

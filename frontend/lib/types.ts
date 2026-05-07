@@ -200,6 +200,15 @@ export interface MakerProposal {
   // Audit
   created_at: number;
   notes: string[];
+
+  // Display + execution route — disambiguates legacy market_id/side for
+  // 2-way Kalshi where the cheapest YES exposure may route through the
+  // opposing market's NO contract.  Optional for backwards compatibility
+  // with older persisted records.
+  display_side?: string;
+  execution_market_id?: string;
+  execution_contract_side?: "yes" | "no";
+  execution_route?: "direct_yes" | "equivalent_no";
 }
 
 export interface MakerProposalsResponse {

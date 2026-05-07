@@ -54,6 +54,27 @@ class NormalizedMarket:
     best_bid: float | None = None
     best_ask: float | None = None
 
+    # Execution route for the canonical side's best YES bid.  In 2-way
+    # Kalshi, if the best YES bid for the canonical side comes from the
+    # complement market's NO bid (because NO_M2 ≡ YES_M1 in 2-way), that
+    # contract — not the canonical ticker — is what a maker would actually
+    # post on.  contract_side is "yes" for direct-YES routes, "no" for
+    # equivalent-NO routes.  Both fields are None for non-Kalshi platforms
+    # and for 2-way markets where neither route has a positive bid.
+    best_bid_market_id: str | None = None
+    best_bid_contract_side: str | None = None
+
+    # Per-side TOB for the no_player (complement) perspective.  Only
+    # 2-way Kalshi populates these — 3-way emits separate NormalizedMarkets
+    # per team so the complement view is unnecessary, and Polymarket leaves
+    # them None.  feature_extractor uses this pair when building the
+    # no_player MarketFeatures so each side carries its own correct
+    # best_bid/best_ask and route info.
+    no_player_best_bid: float | None = None
+    no_player_best_ask: float | None = None
+    no_player_best_bid_market_id: str | None = None
+    no_player_best_bid_contract_side: str | None = None
+
     # Staleness tracking
     fetched_at: float = 0.0     # time.time() when price data was obtained
 

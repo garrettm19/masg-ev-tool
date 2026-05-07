@@ -1164,6 +1164,173 @@ class TestBestBidAsk:
         )
         assert nm.best_bid is None
         assert nm.best_ask is None
+        assert nm.best_bid_market_id is None
+        assert nm.best_bid_contract_side is None
+        assert nm.no_player_best_bid is None
+        assert nm.no_player_best_ask is None
+        assert nm.no_player_best_bid_market_id is None
+        assert nm.no_player_best_bid_contract_side is None
+
+
+# ---------------------------------------------------------------------------
+# Execution-route info on best YES bid — disambiguates
+# direct-YES vs equivalent-NO routes for paper maker proposals.
+# ---------------------------------------------------------------------------
+
+class TestBestBidRoute:
+    """In 2-way Kalshi events, buying NO of M2 ≡ buying YES of M1.  The
+    cheapest YES bid for M1's player can therefore come from either side
+    of the pair.  The adapter records which ticker / contract side won,
+    so the maker layer can name the actual execution route."""
+
+    def test_2way_direct_yes_route_when_yes_bid_higher(self):
+        """M1.yes_bid > M2.no_bid → canonical route is direct YES on M1."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.60, no_ask=0.42,
+        )
+        ma_dict["yes_bid_dollars"] = "0.45"   # higher than M2.no_bid
+
+        mb_dict, _, _ = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        mb_dict["no_bid_dollars"] = "0.30"
+
+        result = _build_one("EVT", [(ma_dict, series, slug), (mb_dict, series, slug)])
+        assert result is not None
+        assert result.best_bid == pytest.approx(0.45)
+        assert result.best_bid_market_id == "KXATPMATCH-A"
+        assert result.best_bid_contract_side == "yes"
+
+    def test_2way_equivalent_no_route_when_no_bid_higher(self):
+        """M2.no_bid > M1.yes_bid → canonical route is NO on M2.
+        Display side stays the M1 player; execution is on the M2 ticker."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.60, no_ask=0.42,
+        )
+        ma_dict["yes_bid_dollars"] = "0.40"   # lower
+
+        mb_dict, _, _ = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        mb_dict["no_bid_dollars"] = "0.42"    # higher → wins the route
+
+        result = _build_one("EVT", [(ma_dict, series, slug), (mb_dict, series, slug)])
+        assert result is not None
+        assert result.best_bid == pytest.approx(0.42)
+        assert result.best_bid_market_id == "KXATPMATCH-B"
+        assert result.best_bid_contract_side == "no"
+        # The displayed side stays the canonical (M1) team; execution route
+        # points to the opposing ticker's NO contract.
+        assert result.market_id == "KXATPMATCH-A"
+
+    def test_2way_tie_prefers_direct_yes(self):
+        """Equal bid values → direct YES route wins.  Defensible default
+        (clearer execution: no implicit cross-side conversion)."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.60, no_ask=0.42,
+        )
+        ma_dict["yes_bid_dollars"] = "0.40"
+
+        mb_dict, _, _ = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        mb_dict["no_bid_dollars"] = "0.40"   # tie
+
+        result = _build_one("EVT", [(ma_dict, series, slug), (mb_dict, series, slug)])
+        assert result is not None
+        assert result.best_bid_market_id == "KXATPMATCH-A"
+        assert result.best_bid_contract_side == "yes"
+
+    def test_2way_no_player_route_independent(self):
+        """The no_player (M2 / complement) route is computed separately
+        and may differ from the canonical (M1) route."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.60, no_ask=0.42,
+        )
+        ma_dict["yes_bid_dollars"] = "0.40"   # M1 yes bid
+        ma_dict["no_bid_dollars"] = "0.55"    # M1 no bid (= equivalent YES bid for M2)
+
+        mb_dict, _, _ = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        mb_dict["yes_bid_dollars"] = "0.50"   # M2 yes bid (direct for M2)
+        mb_dict["no_bid_dollars"] = "0.42"    # M2 no bid (= equivalent YES bid for M1)
+
+        result = _build_one("EVT", [(ma_dict, series, slug), (mb_dict, series, slug)])
+        assert result is not None
+
+        # Canonical (M1 / yes_player) — best YES bid for A is max(0.40, 0.42) = 0.42 via M2.no
+        assert result.best_bid == pytest.approx(0.42)
+        assert result.best_bid_market_id == "KXATPMATCH-B"
+        assert result.best_bid_contract_side == "no"
+
+        # Complement (M2 / no_player) — best YES bid for B is max(0.50, 0.55) = 0.55 via M1.no
+        assert result.no_player_best_bid == pytest.approx(0.55)
+        assert result.no_player_best_bid_market_id == "KXATPMATCH-A"
+        assert result.no_player_best_bid_contract_side == "no"
+        # Complement best ask = M2's cross-market YES ask = min(M2.yes_ask, M1.no_ask) = min(0.42, 0.42) = 0.42
+        assert result.no_player_best_ask == pytest.approx(0.42)
+
+    def test_3way_route_always_direct_yes(self):
+        """3-way (soccer with draw): NO bid on the opposing market includes
+        draw mass — NEVER an equivalent YES bid.  Route must always be
+        direct YES on the team's own ticker."""
+        home = _make_soccer_entry("KXEPLGAME-26APR21BRICFC-BRI", "Brighton", 0.35)
+        away = _make_soccer_entry("KXEPLGAME-26APR21BRICFC-CFC", "Chelsea", 0.38)
+        draw = _make_soccer_entry("KXEPLGAME-26APR21BRICFC-TIE", "Tie", 0.30)
+
+        results = _build_event_markets("KXEPLGAME-26APR21BRICFC", [home, away, draw])
+        bri = next(r for r in results if r.side == "Brighton")
+        cfc = next(r for r in results if r.side == "Chelsea")
+
+        assert bri.best_bid_market_id == "KXEPLGAME-26APR21BRICFC-BRI"
+        assert bri.best_bid_contract_side == "yes"
+        assert cfc.best_bid_market_id == "KXEPLGAME-26APR21BRICFC-CFC"
+        assert cfc.best_bid_contract_side == "yes"
+        # No complement view — each team has its own NormalizedMarket.
+        assert bri.no_player_best_bid is None
+        assert bri.no_player_best_bid_market_id is None
+        assert bri.no_player_best_bid_contract_side is None
+
+    def test_single_fallback_route_direct_yes(self):
+        """Single-market fallback: only the direct YES route is available."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will Alcaraz win?",
+            yes_ask=0.65, no_ask=0.37,
+        )
+        ma_dict["yes_bid_dollars"] = "0.63"
+        result = _build_one("EVT", [(ma_dict, series, slug)])
+        assert result is not None
+        assert result.best_bid_market_id == "KXATPMATCH-A"
+        assert result.best_bid_contract_side == "yes"
+        assert result.no_player_best_bid is None
+
+    def test_2way_missing_bids_yields_none_route(self):
+        """Both M1.yes_bid and M2.no_bid are 0 → no route, all None."""
+        ma_dict, series, slug = _make_market_entry(
+            ticker="KXATPMATCH-A", title="Will A win?",
+            yes_ask=0.60, no_ask=0.42,
+        )
+        ma_dict["yes_bid_dollars"] = "0"
+        mb_dict, _, _ = _make_market_entry(
+            ticker="KXATPMATCH-B", title="Will B win?",
+            yes_ask=0.42, no_ask=0.60,
+        )
+        mb_dict["no_bid_dollars"] = "0"
+
+        result = _build_one("EVT", [(ma_dict, series, slug), (mb_dict, series, slug)])
+        assert result is not None
+        assert result.best_bid is None
+        assert result.best_bid_market_id is None
+        assert result.best_bid_contract_side is None
 
 
 # ---------------------------------------------------------------------------

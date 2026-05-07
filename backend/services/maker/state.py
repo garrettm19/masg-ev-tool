@@ -115,6 +115,12 @@ def _proposal_to_record(proposal: MakerProposal, status: str) -> dict:
         # Audit
         "created_at": proposal.created_at,
         "notes": list(proposal.notes),
+        # Display + execution route (legacy records may lack these — readers
+        # should treat missing values as "direct_yes on market_id").
+        "display_side": proposal.display_side,
+        "execution_market_id": proposal.execution_market_id,
+        "execution_contract_side": proposal.execution_contract_side,
+        "execution_route": proposal.execution_route,
     }
 
 

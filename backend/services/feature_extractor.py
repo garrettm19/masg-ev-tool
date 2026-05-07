@@ -385,7 +385,9 @@ def extract_h2h_features(
     price_consistent = _check_price_consistency(pm_yes, pm_no)
 
     results: list[MarketFeatures] = []
-    for side_name, price, other_price, fd_odds, fd_odds_other, p_true, p_true_other in sides:
+    for is_yes_player, (side_name, price, other_price, fd_odds, fd_odds_other, p_true, p_true_other) in zip(
+        (True, False), sides
+    ):
         f = _base_features(market, event, name_sc, matched, date_sc, delta_h, confidence, cfg)
         f.market_type = "h2h"
         f.side = side_name
@@ -418,6 +420,21 @@ def extract_h2h_features(
         f.line_match_exact = True
         f.unit_match = True
         f.side_match = True
+
+        # The no_player feature uses the complement perspective from the
+        # NormalizedMarket so its best_bid/best_ask and execution route
+        # reflect THIS team's viewpoint, not the canonical M1 view that
+        # _base_features copies in.  When complement data is unavailable
+        # (3-way emit gives each team its own NM, single-fallback emits
+        # only one direction, Polymarket leaves all None) the no_player
+        # feature falls back to None on these fields and the maker pass
+        # rejects it with BOOK_CROSSED_OR_EMPTY — correct, because we
+        # cannot route a maker order without per-side data.
+        if not is_yes_player:
+            f.best_bid = market.no_player_best_bid
+            f.best_ask = market.no_player_best_ask
+            f.best_bid_market_id = market.no_player_best_bid_market_id
+            f.best_bid_contract_side = market.no_player_best_bid_contract_side
 
         results.append(f)
 
@@ -704,9 +721,13 @@ def _base_features(
         away_last_name_collision=away_coll,
         # Data quality
         bid_ask_spread=market.bid_ask_spread,
-        # Top-of-book — maker-planning inputs; pure pass-through from adapter
+        # Top-of-book — maker-planning inputs; pure pass-through from adapter.
+        # _base_features uses the canonical (yes_player) values; the no_player
+        # side is overridden in extract_h2h_features below.
         best_bid=market.best_bid,
         best_ask=market.best_ask,
+        best_bid_market_id=market.best_bid_market_id,
+        best_bid_contract_side=market.best_bid_contract_side,
         # Staleness tracking
         price_fetched_at=market.fetched_at,
         fd_fetched_at=odds_cache.get_fetched_at(event.sport_key),

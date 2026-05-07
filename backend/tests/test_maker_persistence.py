@@ -167,6 +167,11 @@ class TestAuditFields:
         "taker_edge_at_planning",
         "created_at",
         "notes",
+        # Execution route — disambiguates 2-way Kalshi market_id/side
+        "display_side",
+        "execution_market_id",
+        "execution_contract_side",
+        "execution_route",
     }
 
     def test_record_has_all_required_fields(self, tmp_path: Path):
@@ -335,6 +340,48 @@ class TestStatusValidation:
 # ---------------------------------------------------------------------------
 # Iterator
 # ---------------------------------------------------------------------------
+
+class TestExecutionRoutePersistence:
+    """Execution route fields survive JSONL round-trip."""
+
+    def test_direct_yes_route_persisted(self, tmp_path: Path):
+        store = PaperMakerStore(base_dir=tmp_path)
+        prop = _proposal()
+        # The default _proposal helper doesn't set route fields → defaults
+        # apply (display_side="", execution_market_id="", contract="yes",
+        # route="direct_yes").  Override here for the test.
+        prop_with_route = MakerProposal(
+            **{**{f.name: getattr(prop, f.name) for f in prop.__dataclass_fields__.values()},
+               "display_side": "Player A",
+               "execution_market_id": "KXATPMATCH-A",
+               "execution_contract_side": "yes",
+               "execution_route": "direct_yes"}
+        )
+        store.append(prop_with_route, STATUS_PAPER_ACTIVE)
+        records = store.read_recent(days=2)
+        rec = records[0]
+        assert rec["display_side"] == "Player A"
+        assert rec["execution_market_id"] == "KXATPMATCH-A"
+        assert rec["execution_contract_side"] == "yes"
+        assert rec["execution_route"] == "direct_yes"
+
+    def test_equivalent_no_route_persisted(self, tmp_path: Path):
+        store = PaperMakerStore(base_dir=tmp_path)
+        prop = _proposal()
+        prop_with_route = MakerProposal(
+            **{**{f.name: getattr(prop, f.name) for f in prop.__dataclass_fields__.values()},
+               "display_side": "Player A",
+               "execution_market_id": "KXATPMATCH-B",
+               "execution_contract_side": "no",
+               "execution_route": "equivalent_no"}
+        )
+        store.append(prop_with_route, STATUS_PAPER_ACTIVE)
+        rec = store.read_recent(days=2)[0]
+        assert rec["display_side"] == "Player A"
+        assert rec["execution_market_id"] == "KXATPMATCH-B"
+        assert rec["execution_contract_side"] == "no"
+        assert rec["execution_route"] == "equivalent_no"
+
 
 class TestIter:
     def test_iter_day_yields_records(self, tmp_path: Path):

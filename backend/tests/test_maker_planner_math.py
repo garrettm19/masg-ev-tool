@@ -477,6 +477,66 @@ class TestTickRoundingConservative:
 # Notes / observability
 # ---------------------------------------------------------------------------
 
+class TestExecutionRoute:
+    """The proposal carries explicit execution route info derived from
+    ``MarketFeatures.best_bid_market_id`` / ``best_bid_contract_side``.
+    Falls back to direct YES on the canonical market_id when route data
+    is unavailable (legacy features, non-Kalshi platforms)."""
+
+    def test_direct_yes_route_from_canonical(self):
+        f = _features(
+            best_bid_market_id="KXATPMATCH-A",
+            best_bid_contract_side="yes",
+        )
+        b = _book(best_bid=0.40, best_ask=0.90)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+        assert prop.eligible is True
+        assert prop.execution_market_id == "KXATPMATCH-A"
+        assert prop.execution_contract_side == "yes"
+        assert prop.execution_route == "direct_yes"
+        # Display side mirrors the team name
+        assert prop.display_side == f.side
+
+    def test_equivalent_no_route_preserves_display_side(self):
+        """Best YES bid for player A came via the M2 ticker's NO contract;
+        the proposal's display_side stays as A's team name but execution
+        targets M2 with contract_side='no'."""
+        f = _features(
+            side="Player A",
+            best_bid_market_id="KXATPMATCH-B",
+            best_bid_contract_side="no",
+        )
+        b = _book(best_bid=0.40, best_ask=0.90)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+        assert prop.eligible is True
+        # Display side stays A
+        assert prop.display_side == "Player A"
+        assert prop.side == "Player A"
+        # Execution targets the OPPOSING ticker's NO contract
+        assert prop.execution_market_id == "KXATPMATCH-B"
+        assert prop.execution_contract_side == "no"
+        assert prop.execution_route == "equivalent_no"
+        # market_id (legacy display) stays the canonical ticker
+        assert prop.market_id == f.market_id
+
+    def test_legacy_features_fall_back_to_direct_yes(self):
+        """When best_bid_market_id is unset (None), the proposal falls back
+        to direct YES on the canonical market_id — preserves legacy
+        behavior for non-Kalshi or older features."""
+        f = _features(
+            best_bid_market_id=None,
+            best_bid_contract_side=None,
+        )
+        b = _book(best_bid=0.40, best_ask=0.90)
+        cfg = EngineConfig(min_edge=0.05, cost_buffer=0.01)
+        prop = plan_maker_proposal(f, b, cfg, _maker_cfg(), now=time.time())
+        assert prop.execution_market_id == f.market_id
+        assert prop.execution_contract_side == "yes"
+        assert prop.execution_route == "direct_yes"
+
+
 class TestNoMidpointPricing:
     """Regression guard: ``proposed_price`` is one tick above ``best_bid``
     (capped by ``maker_max_bid``) — never the midpoint of (best_bid, best_ask).
