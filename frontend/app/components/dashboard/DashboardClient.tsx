@@ -12,6 +12,7 @@ import { TrackedPositions } from "./TrackedPositions";
 import { NotificationSettings, useMonitorState } from "./NotificationSettings";
 import { DataStatus } from "./DataStatus";
 import { StatusStrip } from "./StatusStrip";
+import { PaperMakerControls } from "./PaperMakerControls";
 
 interface Props {
   initialData: OpportunitiesResponse | null;
@@ -60,6 +61,10 @@ export function DashboardClient({ initialData }: Props) {
   const [lastRefreshError, setLastRefreshError] = useState<string | null>(null);
   const [lastRefreshDuration, setLastRefreshDuration] = useState<number | null>(null);
   const [firstPollComplete, setFirstPollComplete] = useState(false);
+  // Bumped each time a scan transitions from is_refreshing=true to false.
+  // PaperMakerControls watches it to refetch the latest-run summary so the
+  // counts reflect the freshest run without polling on its own.
+  const [scanRefreshKey, setScanRefreshKey] = useState(0);
   const lastSeenUpdatedAt = useRef<number | null>(init.updated_at ?? null);
   const pollIntervalRef = useRef(initialData ? 10_000 : 2_000); // fast poll if no initial data
   const hasAutoFiredRef = useRef(false);  // cold-start auto-refresh once-only guard
@@ -170,6 +175,10 @@ export function DashboardClient({ initialData }: Props) {
         // Backend confirms not refreshing → clear the optimistic local flag
         if (scanning && !status.is_refreshing) {
           setScanning(false);
+          // Signal scan completion to PaperMakerControls so it refetches the
+          // latest-run maker summary.  Bumping a scalar avoids prop drilling
+          // a callback through StatusStrip.
+          setScanRefreshKey((k) => k + 1);
         }
       } catch {
         // Polling failure is silent — next tick will retry
@@ -657,6 +666,9 @@ export function DashboardClient({ initialData }: Props) {
             status={monitor.status}
             onReload={monitor.reload}
           />
+
+          {/* Paper Maker — read-only audit + safe enable/disable */}
+          <PaperMakerControls scanRefreshKey={scanRefreshKey} />
 
           {/* Main grid: table + sidebar */}
           <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 320px" }}>

@@ -224,6 +224,53 @@ export interface MakerProposalsResponse {
   proposals: MakerProposal[];
 }
 
+// Runtime maker config — mirrors backend MakerConfigResponse.  Safety
+// invariants (paper_only, platforms, market_types) are surfaced read-only
+// so the UI can label everything PAPER ONLY and confirm scope.
+export interface MakerConfig {
+  enabled: boolean;
+  paper_only: boolean;
+  platforms: string[];
+  market_types: string[];
+  min_estimated_maker_edge: number;
+  require_min_spread: number;
+  max_book_age_seconds: number;
+  max_fd_age_seconds: number;
+  max_contracts_per_order: number;
+  max_notional_per_order_usd: number;
+  max_notional_per_market_usd: number;
+  max_open_orders_total: number;
+  max_open_orders_per_market: number;
+  max_orders_per_hour: number;
+  max_daily_notional_usd: number;
+  default_ttl_seconds: number;
+  cancel_before_event_offset_s: number;
+}
+
+// Subset of MakerConfig the UI is allowed to mutate via POST.  ``paper_only``,
+// ``platforms``, and ``market_types`` are intentionally absent — the backend
+// clamps them server-side regardless of input.
+export interface MakerConfigUpdate {
+  enabled?: boolean;
+  min_estimated_maker_edge?: number;
+}
+
+export interface MakerSummaryRejectionReason {
+  reason: string;
+  count: number;
+}
+
+export interface MakerSummary {
+  days: number;
+  total: number;
+  eligible: number;
+  rejected: number;
+  by_status: Record<string, number>;
+  by_platform: Record<string, number>;
+  top_rejection_reasons: MakerSummaryRejectionReason[];
+  average_estimated_maker_edge: number | null;
+}
+
 export interface SnapshotStatus {
   has_snapshot: boolean;
   updated_at: number | null;

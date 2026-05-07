@@ -1,4 +1,13 @@
-import { MakerProposalsResponse, OpportunitiesResponse, ScanConfigResponse, SnapshotStatus, SportDataStatus } from "./types";
+import {
+  MakerConfig,
+  MakerConfigUpdate,
+  MakerProposalsResponse,
+  MakerSummary,
+  OpportunitiesResponse,
+  ScanConfigResponse,
+  SnapshotStatus,
+  SportDataStatus,
+} from "./types";
 import type { SportRegistryEntry } from "./sport-labels";
 
 const BACKEND_URL =
@@ -120,6 +129,43 @@ export async function fetchMakerProposals(params: {
   if (params.eligible != null) url.searchParams.set("eligible", String(params.eligible));
   if (params.latest_run != null) url.searchParams.set("latest_run", String(params.latest_run));
   if (params.limit != null) url.searchParams.set("limit", String(params.limit));
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) throw new Error(`Backend error: ${res.status}`);
+  return res.json();
+}
+
+// Runtime maker config — read.  Always returns the current safety-clamped
+// values regardless of who set them.
+export async function fetchMakerConfig(): Promise<MakerConfig> {
+  const res = await fetch(`${BACKEND_URL}/api/maker/config`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Backend error: ${res.status}`);
+  return res.json();
+}
+
+// Runtime maker config — write.  Only ``enabled`` and
+// ``min_estimated_maker_edge`` are accepted by the typed update; the
+// backend additionally enforces paper-mode safety invariants on every
+// write so this endpoint cannot enable live trading or Polymarket.
+export async function updateMakerConfig(update: MakerConfigUpdate): Promise<MakerConfig> {
+  const res = await fetch(`${BACKEND_URL}/api/maker/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Backend error: ${res.status}`);
+  return res.json();
+}
+
+// Aggregated maker summary.  ``latest_run=true`` narrows to the most
+// recent scan's records only — what the dashboard wants by default.
+export async function fetchMakerSummary(params: {
+  days?: number;
+  latest_run?: boolean;
+} = {}): Promise<MakerSummary> {
+  const url = new URL(`${BACKEND_URL}/api/maker/summary`);
+  if (params.days != null) url.searchParams.set("days", String(params.days));
+  if (params.latest_run != null) url.searchParams.set("latest_run", String(params.latest_run));
   const res = await fetch(url.toString(), { cache: "no-store" });
   if (!res.ok) throw new Error(`Backend error: ${res.status}`);
   return res.json();
