@@ -218,6 +218,27 @@ For soccer (3-way markets), candidates with `fd.draw_odds=None` are SKIPped at t
 
 ---
 
+## Paper Maker Subsystem
+
+The current maker layer records simulated proposals only. During the paper-testing phase, it must not grow live execution behavior by accident.
+
+- The maker system is PAPER ONLY.
+- Do not add real order placement.
+- Do not add live trading endpoints.
+- Do not add wallet, transaction signing, or authenticated order-submission behavior.
+- Do not add frontend buttons or labels such as "Place Order," "Submit Bid," or anything that implies live execution.
+- `MakerConfig.enabled` must default to `False`.
+- `MakerConfig.paper_only` must remain `True`.
+- Maker platform scope remains Kalshi-only unless Mason explicitly approves a separate rollout.
+- Maker market-type scope remains H2H-only unless Mason explicitly approves a separate rollout.
+- Maker proposals are decision support / simulated proposal records only.
+- Maker planning must not loosen EV-core matching, date, side, confidence, ambiguity, or price/probability safety rules.
+- If a change touches maker pricing, proposal eligibility, route selection, persistence, frontend display, or config toggles, add or update tests, or clearly state why tests were not run.
+
+Future live execution is not forbidden as a product direction, but it must be implemented later as a separate explicitly approved execution layer with its own design, tests, safety gates, manual controls, limits, and rollback plan. Do not mix live execution into paper-maker planning, diagnostics, UI, config, or persistence work.
+
+---
+
 ## Secrets and Credentials
 
 Do not read, print, modify, or commit secrets.
