@@ -395,6 +395,70 @@ class TestBookSourceProvenance:
 
 
 # ---------------------------------------------------------------------------
+# run_id stamping — every proposal in one _run_maker_pass shares one UUID
+# ---------------------------------------------------------------------------
+
+class TestRunIdStamping:
+    """Each ``_run_maker_pass`` invocation generates a single UUID and
+    stamps every persisted proposal with it.  Two runs against the same
+    store produce two distinct ``run_id`` values, enabling the
+    ``latest_run=true`` endpoint filter."""
+
+    def test_single_run_assigns_one_run_id_to_all_records(self, tmp_path: Path):
+        store = PaperMakerStore(base_dir=tmp_path)
+        feats = [
+            _tob_features(market_id="K1"),
+            _tob_features(market_id="K2"),
+            _tob_features(market_id="K3"),
+        ]
+        asyncio.run(_run_maker_pass(
+            features=feats,
+            engine_cfg=EngineConfig(min_edge=0.05, cost_buffer=0.01),
+            maker_cfg=_maker_cfg(),
+            store=store,
+        ))
+        records = store.read_recent(days=2)
+        assert len(records) == 3
+        run_ids = {r["run_id"] for r in records}
+        assert len(run_ids) == 1
+        # UUIDs are 36-char strings with 4 hyphens; sanity-check the shape.
+        only = next(iter(run_ids))
+        assert isinstance(only, str)
+        assert len(only) == 36
+
+    def test_two_runs_produce_two_distinct_run_ids(self, tmp_path: Path):
+        store = PaperMakerStore(base_dir=tmp_path)
+        for _ in range(2):
+            asyncio.run(_run_maker_pass(
+                features=[_tob_features()],
+                engine_cfg=EngineConfig(min_edge=0.05, cost_buffer=0.01),
+                maker_cfg=_maker_cfg(),
+                store=store,
+            ))
+        records = store.read_recent(days=2)
+        assert len(records) == 2
+        run_ids = {r["run_id"] for r in records}
+        assert len(run_ids) == 2
+
+    def test_safety_rejected_record_also_carries_run_id(self, tmp_path: Path):
+        """The safety-pre-filter rejection path persists with an empty book.
+        That record must still receive the run's UUID — otherwise the
+        latest_run filter would drop it from the per-run summary."""
+        store = PaperMakerStore(base_dir=tmp_path)
+        feat = _tob_features(has_bookmaker_data=False)
+        asyncio.run(_run_maker_pass(
+            features=[feat],
+            engine_cfg=EngineConfig(min_edge=0.05, cost_buffer=0.01),
+            maker_cfg=_maker_cfg(),
+            store=store,
+        ))
+        rec = store.read_recent(days=2)[0]
+        assert rec["status"] == STATUS_PAPER_REJECTED
+        assert isinstance(rec["run_id"], str)
+        assert len(rec["run_id"]) == 36
+
+
+# ---------------------------------------------------------------------------
 # Execution route propagation through the full pipeline
 # ---------------------------------------------------------------------------
 

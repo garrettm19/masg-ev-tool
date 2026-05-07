@@ -134,6 +134,13 @@ class MakerProposal:
     execution_contract_side: str = "yes"
     execution_route: str = "direct_yes"
 
+    # Refresh-cycle UUID shared by every proposal produced in a single
+    # ``_run_maker_pass`` invocation.  ``None`` for unit tests that bypass
+    # the pipeline and for legacy records persisted before the field
+    # existed.  The maker endpoints' ``latest_run`` filter uses this to
+    # narrow to a single scan's worth of audit data.
+    run_id: str | None = None
+
 
 def _required_edge_for(features: MarketFeatures, cfg: EngineConfig) -> float:
     """Mirror the taker rule_engine ``_edge_meets_threshold`` minimum-edge
@@ -158,6 +165,7 @@ def plan_maker_proposal(
     engine_cfg: EngineConfig,
     maker_cfg: MakerConfig,
     now: float | None = None,
+    run_id: str | None = None,
 ) -> MakerProposal:
     """
     Build a ``MakerProposal`` for one (features, book) pair.
@@ -273,4 +281,5 @@ def plan_maker_proposal(
         execution_market_id=execution_market_id,
         execution_contract_side=execution_contract_side,
         execution_route=execution_route,
+        run_id=run_id,
     )

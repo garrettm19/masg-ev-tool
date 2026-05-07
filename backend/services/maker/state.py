@@ -121,6 +121,10 @@ def _proposal_to_record(proposal: MakerProposal, status: str) -> dict:
         "execution_market_id": proposal.execution_market_id,
         "execution_contract_side": proposal.execution_contract_side,
         "execution_route": proposal.execution_route,
+        # Refresh-cycle UUID (None for unit fixtures and legacy records).
+        # The /api/maker/proposals?latest_run=true filter uses this to narrow
+        # to a single scan's records.
+        "run_id": proposal.run_id,
     }
 
 

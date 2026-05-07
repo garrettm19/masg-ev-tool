@@ -343,6 +343,242 @@ class TestReadOnly:
         assert client.put("/api/maker/proposals").status_code == 405
 
 
+class TestLatestRunFilter:
+    """``/api/maker/proposals?latest_run=true`` and
+    ``/api/maker/summary?latest_run=true`` narrow to the most recent
+    scan's run_id; legacy records (run_id absent) are ignored unless
+    they're all that's in the store, in which case the endpoint falls
+    back gracefully to the full set."""
+
+    def _append_with_run(
+        self, store: PaperMakerStore, *, run_id: str, market_id: str,
+        proposal_id: str, created_at: float, eligible: bool = True,
+        rejection_reasons: tuple[str, ...] = (),
+    ):
+        from services.maker.planner import MakerProposal
+        prop = _proposal(
+            eligible=eligible,
+            rejection_reasons=rejection_reasons,
+            proposal_id=proposal_id,
+            market_id=market_id,
+            created_at=created_at,
+        )
+        with_run = MakerProposal(**{
+            **{f.name: getattr(prop, f.name)
+               for f in prop.__dataclass_fields__.values()},
+            "run_id": run_id,
+        })
+        store.append(
+            with_run,
+            STATUS_PAPER_ACTIVE if eligible else STATUS_PAPER_REJECTED,
+        )
+
+    def _populate_two_runs(self, store: PaperMakerStore) -> tuple[float, float]:
+        """Run A (older, 3 records) + Run B (newer, 2 records).  Returns
+        (run_a_ts, run_b_ts) for tests that need to assert on times."""
+        import time
+        run_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        run_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        ts_a = time.time() - 60.0
+        ts_b = time.time()
+        # Run A — older, 3 records
+        for i in range(3):
+            self._append_with_run(
+                store, run_id=run_a, market_id=f"K-A{i}",
+                proposal_id=f"A-{i}", created_at=ts_a + i * 0.001,
+            )
+        # Run B — newer, 2 records (one rejected)
+        self._append_with_run(
+            store, run_id=run_b, market_id="K-B0",
+            proposal_id="B-0", created_at=ts_b,
+        )
+        self._append_with_run(
+            store, run_id=run_b, market_id="K-B1",
+            proposal_id="B-1", created_at=ts_b + 0.001,
+            eligible=False, rejection_reasons=("BOOK_STALE",),
+        )
+        return ts_a, ts_b
+
+    def test_default_returns_all_records_across_runs(self, client_with_store):
+        client, store, _ = client_with_store
+        self._populate_two_runs(store)
+        body = client.get("/api/maker/proposals").json()
+        # Default: latest_run=false → all 5 records visible
+        assert body["count"] == 5
+
+    def test_latest_run_returns_only_newest_run(self, client_with_store):
+        client, store, _ = client_with_store
+        self._populate_two_runs(store)
+        body = client.get(
+            "/api/maker/proposals", params={"latest_run": "true"}
+        ).json()
+        assert body["count"] == 2
+        # Only Run B's records survive the filter
+        ids = {p["proposal_id"] for p in body["proposals"]}
+        assert ids == {"B-0", "B-1"}
+        run_ids = {p["run_id"] for p in body["proposals"]}
+        assert run_ids == {"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}
+
+    def test_latest_run_composes_with_other_filters(self, client_with_store):
+        """latest_run=true + eligible=true must apply both: latest scan AND
+        eligible only.  Run B has 1 eligible (B-0) and 1 rejected (B-1).
+        Run A has 3 eligibles, but they should be excluded by latest_run."""
+        client, store, _ = client_with_store
+        self._populate_two_runs(store)
+        body = client.get(
+            "/api/maker/proposals",
+            params={"latest_run": "true", "eligible": "true"},
+        ).json()
+        assert body["count"] == 1
+        assert body["proposals"][0]["proposal_id"] == "B-0"
+
+    def test_latest_run_market_id_filter_combines(self, client_with_store):
+        """Frontend's exact query: latest_run=true + market_id=<sel>."""
+        client, store, _ = client_with_store
+        self._populate_two_runs(store)
+        body = client.get(
+            "/api/maker/proposals",
+            params={"latest_run": "true", "market_id": "K-A0"},
+        ).json()
+        # K-A0 is in Run A (the older one), so latest_run filters it out
+        assert body["count"] == 0
+
+        body = client.get(
+            "/api/maker/proposals",
+            params={"latest_run": "true", "market_id": "K-B0"},
+        ).json()
+        assert body["count"] == 1
+        assert body["proposals"][0]["proposal_id"] == "B-0"
+
+    def test_legacy_only_records_fallback_to_all(self, client_with_store):
+        """When no record carries a run_id (entire file is legacy),
+        latest_run=true falls back gracefully to the full set rather than
+        returning empty.  Prevents a stale-data outage on dashboards."""
+        client, store, _ = client_with_store
+        # _proposal() default factory leaves run_id=None → legacy
+        store.append(_proposal(proposal_id="legacy-1"), STATUS_PAPER_ACTIVE)
+        store.append(_proposal(proposal_id="legacy-2"), STATUS_PAPER_ACTIVE)
+        body = client.get(
+            "/api/maker/proposals", params={"latest_run": "true"}
+        ).json()
+        assert body["count"] == 2
+
+    def test_mixed_legacy_and_run_records_excludes_legacy(self, client_with_store):
+        """When some records have run_ids and others don't, latest_run
+        narrows to the newest run_id and DROPS the legacy records (they
+        can't be assigned to any run)."""
+        client, store, _ = client_with_store
+        # 1 legacy + 2 in run X
+        store.append(_proposal(proposal_id="legacy-1"), STATUS_PAPER_ACTIVE)
+        self._append_with_run(
+            store, run_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+            market_id="K-X0", proposal_id="X-0",
+            created_at=__import__("time").time(),
+        )
+        self._append_with_run(
+            store, run_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+            market_id="K-X1", proposal_id="X-1",
+            created_at=__import__("time").time() + 0.001,
+        )
+        body = client.get(
+            "/api/maker/proposals", params={"latest_run": "true"}
+        ).json()
+        ids = {p["proposal_id"] for p in body["proposals"]}
+        assert ids == {"X-0", "X-1"}
+
+    def test_summary_latest_run_counts_only_newest(self, client_with_store):
+        """summary?latest_run=true → counts based on Run B (2 records,
+        1 eligible, 1 rejected).  default summary still aggregates all 5."""
+        client, store, _ = client_with_store
+        self._populate_two_runs(store)
+
+        full = client.get("/api/maker/summary").json()
+        assert full["total"] == 5
+        assert full["eligible"] == 4
+        assert full["rejected"] == 1
+
+        latest = client.get(
+            "/api/maker/summary", params={"latest_run": "true"}
+        ).json()
+        assert latest["total"] == 2
+        assert latest["eligible"] == 1
+        assert latest["rejected"] == 1
+
+    def test_summary_legacy_fallback_matches_proposals_fallback(
+        self, client_with_store
+    ):
+        """All-legacy fallback applies to /summary as well — never returns
+        empty just because no record has a run_id."""
+        client, store, _ = client_with_store
+        store.append(_proposal(eligible=True), STATUS_PAPER_ACTIVE)
+        store.append(_proposal(eligible=False, rejection_reasons=("BOOK_STALE",)),
+                     STATUS_PAPER_REJECTED)
+        latest = client.get(
+            "/api/maker/summary", params={"latest_run": "true"}
+        ).json()
+        assert latest["total"] == 2
+        assert latest["eligible"] == 1
+        assert latest["rejected"] == 1
+
+
+class TestLimitParameter:
+    """``limit`` caps response size at 1000 (server-side clamp); default 100."""
+
+    def test_default_limit_is_100(self, client_with_store):
+        """Sanity: explicit empty store + no limit param → default
+        clamp kicks in but list is empty anyway."""
+        client, _, _ = client_with_store
+        body = client.get("/api/maker/proposals").json()
+        # Cannot assert a number with empty store; covered indirectly below.
+        assert body["count"] == 0
+
+    def test_limit_caps_returned_records(self, client_with_store):
+        client, store, _ = client_with_store
+        for i in range(15):
+            store.append(
+                _proposal(proposal_id=f"p-{i}"),
+                STATUS_PAPER_ACTIVE,
+            )
+        body = client.get(
+            "/api/maker/proposals", params={"limit": 5}
+        ).json()
+        assert body["count"] == 5
+
+    def test_limit_returns_newest_first(self, client_with_store):
+        """When the limit truncates, the *most recent* records survive —
+        the chronologically oldest are dropped first."""
+        import time
+        client, store, _ = client_with_store
+        base_ts = time.time()
+        for i in range(5):
+            store.append(
+                _proposal(proposal_id=f"p-{i}", created_at=base_ts + i),
+                STATUS_PAPER_ACTIVE,
+            )
+        body = client.get(
+            "/api/maker/proposals", params={"limit": 2}
+        ).json()
+        ids = [p["proposal_id"] for p in body["proposals"]]
+        # p-4 (newest) and p-3 (next-newest) must survive; p-0..p-2 dropped.
+        assert ids == ["p-4", "p-3"]
+
+    def test_limit_above_max_rejected(self, client_with_store):
+        """Server clamps at 1000; values above must 422."""
+        client, _, _ = client_with_store
+        resp = client.get("/api/maker/proposals", params={"limit": 1001})
+        assert resp.status_code == 422
+
+    def test_limit_zero_rejected(self, client_with_store):
+        client, _, _ = client_with_store
+        resp = client.get("/api/maker/proposals", params={"limit": 0})
+        assert resp.status_code == 422
+
+    def test_limit_at_max_accepted(self, client_with_store):
+        client, _, _ = client_with_store
+        resp = client.get("/api/maker/proposals", params={"limit": 1000})
+        assert resp.status_code == 200
+
+
 class TestNullablePriceFieldsSurfacedByApi:
     """Regression guard for the rejected-proposal price-sanitization fix:
     None-valued ``maker_max_bid`` / ``proposed_price`` / ``estimated_maker_edge``

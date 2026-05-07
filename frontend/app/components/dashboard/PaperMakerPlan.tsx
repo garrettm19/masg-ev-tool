@@ -378,7 +378,11 @@ export function PaperMakerPlan({ marketId, side }: Props) {
     let cancelled = false;
     setLoading(true);
     setErrored(false);
-    fetchMakerProposals({ days: 1, market_id: marketId })
+    // latest_run narrows the response to the most recent scan only — the
+    // audit JSONL accumulates records across many refreshes, but the
+    // detail panel should reflect the planner's view from the freshest
+    // scan to avoid showing stale prices/route info.
+    fetchMakerProposals({ days: 1, market_id: marketId, latest_run: true })
       .then((resp) => {
         if (cancelled) return;
         setProposal(selectProposal(resp.proposals, marketId, side));

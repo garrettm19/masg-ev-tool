@@ -393,6 +393,36 @@ class TestNullablePriceFieldsPersistence:
         assert rec["estimated_maker_edge"] == 0.08
 
 
+class TestRunIdPersistence:
+    """``run_id`` round-trips through JSONL, including legacy records that
+    predate the field (which serialize as ``null`` because the dataclass
+    default is ``None``)."""
+
+    def test_run_id_round_trips(self, tmp_path: Path):
+        store = PaperMakerStore(base_dir=tmp_path)
+        prop = _proposal()
+        with_run = MakerProposal(**{
+            **{f.name: getattr(prop, f.name)
+               for f in prop.__dataclass_fields__.values()},
+            "run_id": "11111111-2222-3333-4444-555555555555",
+        })
+        store.append(with_run, STATUS_PAPER_ACTIVE)
+        rec = store.read_recent(days=2)[0]
+        assert rec["run_id"] == "11111111-2222-3333-4444-555555555555"
+
+    def test_default_run_id_serializes_as_null(self, tmp_path: Path):
+        """Unit-test fixtures that don't set run_id leave the dataclass
+        default (None) in place; persistence must serialize it as JSON
+        null, never as the string ``"None"``."""
+        store = PaperMakerStore(base_dir=tmp_path)
+        prop = _proposal()  # default factory leaves run_id=None
+        path = store.append(prop, STATUS_PAPER_ACTIVE)
+        raw = path.read_text(encoding="utf-8").strip()
+        assert '"run_id":null' in raw
+        rec = store.read_recent(days=2)[0]
+        assert rec["run_id"] is None
+
+
 class TestExecutionRoutePersistence:
     """Execution route fields survive JSONL round-trip."""
 

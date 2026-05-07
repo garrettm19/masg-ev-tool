@@ -83,6 +83,32 @@ class MakerSummaryResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+def _filter_to_latest_run(records: list[dict]) -> list[dict]:
+    """Narrow to records sharing the run_id of the chronologically newest
+    record that has a run_id at all.
+
+    Records without a string ``run_id`` are treated as legacy (pre-run_id
+    schema).  When *some* records have run_ids, legacy records are
+    excluded from the latest-run slice.  When *every* record is legacy,
+    we fall back to returning all records so the endpoint never goes
+    silent against an old data file.
+    """
+    with_run = [
+        r for r in records
+        if isinstance(r.get("run_id"), str) and r["run_id"]
+    ]
+    if not with_run:
+        # All-legacy fallback — graceful: return everything we have so the
+        # client still sees data instead of an empty list.
+        return list(records)
+    latest_record = max(
+        with_run,
+        key=lambda r: float(r.get("created_at") or 0.0),
+    )
+    target_run_id = latest_record["run_id"]
+    return [r for r in records if r.get("run_id") == target_run_id]
+
+
 @router.get("/maker/proposals", response_model=MakerProposalsResponse)
 def list_maker_proposals(
     days: int = Query(1, ge=1, le=90),
@@ -90,14 +116,22 @@ def list_maker_proposals(
     eligible: bool | None = Query(None),
     platform: str | None = Query(None),
     market_id: str | None = Query(None),
+    latest_run: bool = Query(False),
+    limit: int = Query(100, ge=1, le=1000),
     store: PaperMakerStore = Depends(get_paper_store),
 ) -> MakerProposalsResponse:
     """Return recent paper maker proposals.
 
     Filterable by ``status``, ``eligible``, ``platform``, ``market_id``.
-    Empty store ⇒ empty list (200 OK, never 404).
+    ``latest_run=true`` narrows to the newest scan's records only;
+    ``limit`` caps the response size (default 100, max 1000).  Records
+    are returned newest-first by ``created_at``.  Empty store ⇒ empty
+    list (200 OK, never 404).
     """
     records = store.read_recent(days=days)
+
+    if latest_run:
+        records = _filter_to_latest_run(records)
 
     def _matches(rec: dict) -> bool:
         if status is not None and rec.get("status") != status:
@@ -111,10 +145,17 @@ def list_maker_proposals(
         return True
 
     filtered = [r for r in records if _matches(r)]
+    # Newest first: handy for dashboards, also makes the limit cut off the
+    # least-recent records rather than the most-relevant ones.
+    filtered.sort(
+        key=lambda r: float(r.get("created_at") or 0.0),
+        reverse=True,
+    )
+    capped = filtered[:limit]
     return MakerProposalsResponse(
         days=days,
-        count=len(filtered),
-        proposals=filtered,
+        count=len(capped),
+        proposals=capped,
     )
 
 
@@ -259,10 +300,19 @@ def update_maker_config_endpoint(req: MakerConfigUpdateRequest) -> MakerConfigRe
 def maker_summary(
     days: int = Query(1, ge=1, le=90),
     top_n: int = Query(10, ge=1, le=50),
+    latest_run: bool = Query(False),
     store: PaperMakerStore = Depends(get_paper_store),
 ) -> MakerSummaryResponse:
-    """Aggregated counts for recent paper proposals."""
+    """Aggregated counts for recent paper proposals.
+
+    ``latest_run=true`` aggregates only the newest scan's records — useful
+    for a dashboard showing what the most recent refresh produced.  The
+    default (``latest_run=false``) preserves the full audit summary
+    semantics across the requested ``days`` window.
+    """
     records = store.read_recent(days=days)
+    if latest_run:
+        records = _filter_to_latest_run(records)
 
     by_status: Counter[str] = Counter()
     by_platform: Counter[str] = Counter()

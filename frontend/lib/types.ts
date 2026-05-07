@@ -203,6 +203,11 @@ export interface MakerProposal {
   created_at: number;
   notes: string[];
 
+  // Refresh-cycle UUID shared by every proposal in a single scan.  Optional
+  // because legacy records persisted before the field existed lack it; the
+  // ``latest_run=true`` server-side filter handles the legacy fallback.
+  run_id?: string | null;
+
   // Display + execution route — disambiguates legacy market_id/side for
   // 2-way Kalshi where the cheapest YES exposure may route through the
   // opposing market's NO contract.  Optional for backwards compatibility

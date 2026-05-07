@@ -87,6 +87,7 @@ class MakerService:
         book: OrderBook | MakerBookInput,
         *,
         now: float | None = None,
+        run_id: str | None = None,
     ) -> ProposalOutcome:
         """
         Plan one maker proposal and persist it.
@@ -96,6 +97,12 @@ class MakerService:
         proposal is persisted with status ``paper_active`` if eligible,
         ``paper_rejected`` otherwise — both paths produce a JSONL record
         for the audit trail.
+
+        ``run_id`` is the refresh-cycle UUID shared by every proposal in
+        a single scan; the pipeline orchestrator (`_run_maker_pass`)
+        generates it once and threads it through here so the
+        ``latest_run`` endpoint filter can narrow to one scan's records.
+        ``None`` is acceptable (unit-test path) and persisted as JSON null.
         """
         book_input = (
             _book_to_input(book) if isinstance(book, OrderBook) else book
@@ -107,6 +114,7 @@ class MakerService:
             engine_cfg=self.engine_cfg,
             maker_cfg=self.maker_cfg,
             now=now,
+            run_id=run_id,
         )
 
         status = STATUS_PAPER_ACTIVE if proposal.eligible else STATUS_PAPER_REJECTED

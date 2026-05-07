@@ -107,11 +107,19 @@ export async function fetchMakerProposals(params: {
   days?: number;
   market_id?: string;
   eligible?: boolean;
+  // When true, the server narrows to the most recent scan's run_id only.
+  // Use this for live dashboard views where the audit-trail noise from
+  // multiple scans is undesirable.
+  latest_run?: boolean;
+  // Server clamps to [1, 1000]; default 100.
+  limit?: number;
 } = {}): Promise<MakerProposalsResponse> {
   const url = new URL(`${BACKEND_URL}/api/maker/proposals`);
   if (params.days != null) url.searchParams.set("days", String(params.days));
   if (params.market_id != null) url.searchParams.set("market_id", params.market_id);
   if (params.eligible != null) url.searchParams.set("eligible", String(params.eligible));
+  if (params.latest_run != null) url.searchParams.set("latest_run", String(params.latest_run));
+  if (params.limit != null) url.searchParams.set("limit", String(params.limit));
   const res = await fetch(url.toString(), { cache: "no-store" });
   if (!res.ok) throw new Error(`Backend error: ${res.status}`);
   return res.json();

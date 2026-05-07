@@ -357,6 +357,7 @@ async def _run_maker_pass(
         }
 
     # Lazy imports — keep maker out of the import path when disabled.
+    import uuid
     from services.maker.planner import MakerBookInput
     from services.maker.policy import inherited_taker_rules
     from services.maker.service import MakerService
@@ -370,6 +371,10 @@ async def _run_maker_pass(
         best_bid=None, best_ask=None, fetched_at=0.0,
         source="market_list_top_of_book",
     )
+    # One UUID per refresh — every proposal persisted in this pass shares it
+    # so the /api/maker/proposals?latest_run=true filter can narrow to a
+    # single scan's audit data.
+    run_id = str(uuid.uuid4())
 
     for f in features:
         # Scope filter — out-of-scope features are silently ignored (no record,
@@ -386,7 +391,7 @@ async def _run_maker_pass(
         # to TOB-based maker planning.
         safety_ok = all(rule.condition_fn(f, engine_cfg) for rule in inherited_rules)
         if not safety_ok:
-            service.propose(features=f, book=empty_book)
+            service.propose(features=f, book=empty_book, run_id=run_id)
             rejected_count += 1
             continue
 
@@ -400,7 +405,7 @@ async def _run_maker_pass(
             source="market_list_top_of_book",
         )
 
-        outcome = service.propose(features=f, book=book)
+        outcome = service.propose(features=f, book=book, run_id=run_id)
         if outcome.status == STATUS_PAPER_ACTIVE:
             eligible_count += 1
         else:
