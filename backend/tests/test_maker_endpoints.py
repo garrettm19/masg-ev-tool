@@ -343,6 +343,110 @@ class TestReadOnly:
         assert client.put("/api/maker/proposals").status_code == 405
 
 
+class TestExecutionRouteSurfacedByApi:
+    """The four route fields written by ``PaperMakerStore`` must round-trip
+    through ``GET /api/maker/proposals`` unchanged.  Pre-7bba5c6 records
+    legitimately lack these fields; this suite covers the post-7bba5c6
+    contract on fresh records."""
+
+    def _append_proposal_with_route(
+        self, store: PaperMakerStore, *, market_id: str, route_market_id: str,
+        route_side: str, display_side: str, proposal_id: str,
+    ):
+        from services.maker.planner import MakerProposal
+        prop = _proposal(proposal_id=proposal_id, market_id=market_id)
+        prop_with_route = MakerProposal(
+            **{**{f.name: getattr(prop, f.name)
+                  for f in prop.__dataclass_fields__.values()},
+               "display_side": display_side,
+               "execution_market_id": route_market_id,
+               "execution_contract_side": route_side,
+               "execution_route": "direct_yes" if route_side == "yes" else "equivalent_no"}
+        )
+        store.append(prop_with_route, STATUS_PAPER_ACTIVE)
+
+    def test_direct_yes_route_in_response(self, client_with_store):
+        client, store, _ = client_with_store
+        self._append_proposal_with_route(
+            store,
+            market_id="KXATPMATCH-A",
+            route_market_id="KXATPMATCH-A",
+            route_side="yes",
+            display_side="Player A",
+            proposal_id="route-direct",
+        )
+        body = client.get("/api/maker/proposals").json()
+        assert body["count"] == 1
+        rec = body["proposals"][0]
+        assert rec["display_side"] == "Player A"
+        assert rec["execution_market_id"] == "KXATPMATCH-A"
+        assert rec["execution_contract_side"] == "yes"
+        assert rec["execution_route"] == "direct_yes"
+
+    def test_equivalent_no_route_in_response(self, client_with_store):
+        client, store, _ = client_with_store
+        self._append_proposal_with_route(
+            store,
+            market_id="KXATPMATCH-A",
+            route_market_id="KXATPMATCH-B",
+            route_side="no",
+            display_side="Player A",
+            proposal_id="route-equiv",
+        )
+        body = client.get("/api/maker/proposals").json()
+        rec = body["proposals"][0]
+        # Canonical market_id (legacy display) stays as the team's own ticker
+        assert rec["market_id"] == "KXATPMATCH-A"
+        # But execution route names the actual contract a paper order would post on
+        assert rec["execution_market_id"] == "KXATPMATCH-B"
+        assert rec["execution_contract_side"] == "no"
+        assert rec["execution_route"] == "equivalent_no"
+
+    def test_pre_route_record_omits_fields_silently(self, client_with_store):
+        """Sanity guard for the legacy-record path: a record persisted
+        without route fields (simulating pre-7bba5c6 JSONL lines) flows
+        through the API unchanged.  The fields are simply absent from the
+        response dict; the frontend supplies fallbacks via ``||`` / ``??``
+        on the typed-as-optional fields."""
+        client, store, _ = client_with_store
+        # Build a legacy record by writing JSONL directly, bypassing the
+        # store's _proposal_to_record (which always emits the four fields).
+        import json
+        from datetime import datetime, timezone
+        ts = _proposal().created_at
+        path = store.path_for(datetime.fromtimestamp(ts, tz=timezone.utc).date())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_record = {
+            "schema_version": 1, "status": STATUS_PAPER_ACTIVE,
+            "proposal_id": "legacy-1", "platform": "kalshi",
+            "market_id": "K-LEGACY", "market_type": "h2h", "side": "A",
+            "event_label": "A vs B", "event_start": "2099-01-01T00:00:00Z",
+            "p_true": 0.5, "required_edge": 0.05, "cost_buffer": 0.01,
+            "best_bid": 0.4, "best_ask": 0.9,
+            "book_fetched_at": ts, "fd_fetched_at": ts,
+            "maker_max_bid": 0.44, "proposed_price": 0.41,
+            "tick_size": 0.01, "estimated_maker_edge": 0.08,
+            "eligible": True, "rejection_reasons": [],
+            "rule_evaluations": [], "taker_status_at_planning": "SKIP",
+            "taker_reject_reasons": ["NO_EDGE"],
+            "taker_downgrade_reasons": [], "taker_edge_at_planning": -0.41,
+            "created_at": ts, "notes": ["paper_only"],
+            # No display_side / execution_* — pre-7bba5c6 schema
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(legacy_record) + "\n")
+
+        body = client.get("/api/maker/proposals").json()
+        rec = body["proposals"][0]
+        assert rec["proposal_id"] == "legacy-1"
+        # API does not synthesize defaults for legacy records — the frontend
+        # is responsible for the fallback (``p.execution_market_id || p.market_id``).
+        assert "execution_market_id" not in rec
+        assert "execution_contract_side" not in rec
+        assert "execution_route" not in rec
+        assert "display_side" not in rec
+
+
 class TestNoSecrets:
     def test_response_does_not_contain_api_key_or_paths(
         self, monkeypatch, client_with_store

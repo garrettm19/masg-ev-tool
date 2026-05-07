@@ -395,6 +395,118 @@ class TestBookSourceProvenance:
 
 
 # ---------------------------------------------------------------------------
+# Execution route propagation through the full pipeline
+# ---------------------------------------------------------------------------
+
+class TestExecutionRouteThroughPipeline:
+    """Regression guard for commit 7bba5c6: ensure route fields set on
+    ``MarketFeatures`` survive ``_run_maker_pass`` and land in the persisted
+    JSONL record.  Caught a stale-data confusion where pre-commit records
+    legitimately lacked the fields and fresh-scan validation needed an
+    integration-level test, not just unit tests on the planner and store
+    in isolation."""
+
+    def test_direct_yes_route_persisted_through_pipeline(self, tmp_path: Path):
+        store = PaperMakerStore(base_dir=tmp_path)
+        feat = _tob_features(
+            side="Player A",
+            market_id="KXATPMATCH-A",
+            best_bid_market_id="KXATPMATCH-A",
+            best_bid_contract_side="yes",
+        )
+        asyncio.run(_run_maker_pass(
+            features=[feat],
+            engine_cfg=EngineConfig(min_edge=0.05, cost_buffer=0.01),
+            maker_cfg=_maker_cfg(),
+            store=store,
+        ))
+        rec = store.read_recent(days=2)[0]
+        assert rec["status"] == STATUS_PAPER_ACTIVE
+        assert rec["display_side"] == "Player A"
+        assert rec["execution_market_id"] == "KXATPMATCH-A"
+        assert rec["execution_contract_side"] == "yes"
+        assert rec["execution_route"] == "direct_yes"
+
+    def test_equivalent_no_route_persisted_through_pipeline(self, tmp_path: Path):
+        """Best YES bid for player A came via the M2 ticker's NO contract;
+        the persisted record's display_side stays as A but execution_market_id
+        and contract_side point at the opposing M2 ticker."""
+        store = PaperMakerStore(base_dir=tmp_path)
+        feat = _tob_features(
+            side="Player A",
+            market_id="KXATPMATCH-A",
+            best_bid_market_id="KXATPMATCH-B",
+            best_bid_contract_side="no",
+        )
+        asyncio.run(_run_maker_pass(
+            features=[feat],
+            engine_cfg=EngineConfig(min_edge=0.05, cost_buffer=0.01),
+            maker_cfg=_maker_cfg(),
+            store=store,
+        ))
+        rec = store.read_recent(days=2)[0]
+        assert rec["status"] == STATUS_PAPER_ACTIVE
+        assert rec["display_side"] == "Player A"
+        # Canonical market_id (legacy display) stays unchanged
+        assert rec["market_id"] == "KXATPMATCH-A"
+        # But the execution route names the actual contract a paper order
+        # would post on
+        assert rec["execution_market_id"] == "KXATPMATCH-B"
+        assert rec["execution_contract_side"] == "no"
+        assert rec["execution_route"] == "equivalent_no"
+
+    def test_legacy_features_fall_back_to_direct_yes_through_pipeline(self, tmp_path: Path):
+        """When MarketFeatures.best_bid_market_id is None (older feature
+        objects, non-Kalshi platforms), the persisted record still gets
+        non-empty defaults: direct YES on the canonical market_id."""
+        store = PaperMakerStore(base_dir=tmp_path)
+        feat = _tob_features(
+            side="Player A",
+            market_id="K1",
+            best_bid_market_id=None,
+            best_bid_contract_side=None,
+        )
+        asyncio.run(_run_maker_pass(
+            features=[feat],
+            engine_cfg=EngineConfig(min_edge=0.05, cost_buffer=0.01),
+            maker_cfg=_maker_cfg(),
+            store=store,
+        ))
+        rec = store.read_recent(days=2)[0]
+        assert rec["display_side"] == "Player A"
+        assert rec["execution_market_id"] == "K1"
+        assert rec["execution_contract_side"] == "yes"
+        assert rec["execution_route"] == "direct_yes"
+
+    def test_rejected_proposal_still_carries_route_fields(self, tmp_path: Path):
+        """Rejected (ineligible) proposals must also persist route fields so
+        the audit trail and UI can describe why a paper order would have
+        landed where it would have landed."""
+        store = PaperMakerStore(base_dir=tmp_path)
+        feat = _tob_features(
+            side="Player A",
+            market_id="KXATPMATCH-A",
+            best_bid_market_id="KXATPMATCH-B",
+            best_bid_contract_side="no",
+            best_bid=None,        # forces BOOK_CROSSED_OR_EMPTY rejection
+        )
+        asyncio.run(_run_maker_pass(
+            features=[feat],
+            engine_cfg=EngineConfig(min_edge=0.05, cost_buffer=0.01),
+            maker_cfg=_maker_cfg(),
+            store=store,
+        ))
+        rec = store.read_recent(days=2)[0]
+        assert rec["status"] == STATUS_PAPER_REJECTED
+        assert "BOOK_CROSSED_OR_EMPTY" in rec["rejection_reasons"]
+        # Route fields persist regardless of eligibility
+        assert rec["display_side"] == "Player A"
+        assert rec["execution_market_id"] == "KXATPMATCH-B"
+        assert rec["execution_contract_side"] == "no"
+        assert rec["execution_route"] == "equivalent_no"
+
+
+# ---------------------------------------------------------------------------
 # fetch_opportunities — end-to-end integration
 # ---------------------------------------------------------------------------
 
